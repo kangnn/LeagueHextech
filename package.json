@@ -1,0 +1,36 @@
+{
+  "name": "league-hextech",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LeagueHextech · 海克斯乱斗 5v5 房间搜索器",
+  "author": {
+    "name": "kangn",
+    "email": "albertdk@163.com"
+  },
+  "main": "src/main.mjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node tests/controller.test.mjs && node tests/renderer.test.mjs && node tests/tray.test.mjs",
+    "test:controller": "node tests/controller.test.mjs",
+    "test:renderer": "node tests/renderer.test.mjs",
+    "test:tray": "node tests/tray.test.mjs",
+    "build:portable": "node scripts/build-portable.mjs",
+    "icon": "node scripts/make-tray-icon.mjs --preview pictures/tray-icon.png"
+  },
+  "keywords": [
+    "league-of-legends",
+    "lcu",
+    "lcu-api",
+    "hextech",
+    "aram",
+    "electron",
+    "windows"
+  ],
+  "devDependencies": {
+    "electron": "^37.4.0"
+  }
+}

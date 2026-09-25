@@ -1,0 +1,21 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # The app only ships for Windows, so that is the platform worth staying green on.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Deliberately no install step: the suites drive the controller, the renderer script and the
+      # generated tray icon with nothing but Node built-ins, so CI stays fast and cannot fail on a
+      # dependency download.
+      - name: Run the test suites
+        run: npm test

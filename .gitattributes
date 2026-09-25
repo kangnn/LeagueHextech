@@ -1,0 +1,6 @@
+# Normalise line endings on checkout so a Windows-only project does not commit CRLF everywhere.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.jpg binary
