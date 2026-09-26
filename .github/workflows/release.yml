@@ -62,8 +62,8 @@ jobs:
           }
 
       # A dev build gets a version of its own: the sha makes every dev build distinct, and the `-ci.`
-      # prerelease tag puts it on the dev channel - electron-builder then writes `ci.yml` instead of
-      # `latest.yml`, so a stable install never sees it.
+      # prerelease tag puts it on the dev channel - an installed dev build looks for a `ci.yml` feed
+      # instead of the stable `latest.yml`.
       - name: Set the dev channel version
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         shell: bash
@@ -82,7 +82,7 @@ jobs:
         shell: pwsh
         run: |
           Get-Content release/win-unpacked/resources/app-update.yml
-          if (Test-Path release/latest.yml) { Get-Content release/latest.yml } else { Get-Content release/ci.yml }
+          Get-Content release/latest.yml
 
       # The portable folder stays available for people who would rather not install anything; it simply
       # cannot update itself.
@@ -142,6 +142,9 @@ jobs:
         run: |
           $sha = "${{ github.sha }}".Substring(0, 7)
           $tag = "ci-$sha"
+          # electron-builder always writes latest.yml (regardless of a prerelease version), so the dev
+          # channel feed is that same file under the channel name an installed dev build asks for.
+          Copy-Item release/latest.yml release/ci.yml
           # Re-running the same commit must not fail on an existing tag.
           gh release view $tag --json tagName 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) { gh release delete $tag --yes --cleanup-tag }
