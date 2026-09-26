@@ -70,7 +70,8 @@ const IDS = [
   "errorRow", "error", "updateRow", "updateText", "installUpdate", "diagnostics",
   "pollIntervalMs", "minPlayers", "maxInvites",
   "stallTimeoutSec", "nameKeywords", "save", "settingsNow",
-  "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors"
+  "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors",
+  "about", "aboutDialog", "aboutVersion", "aboutChannel", "closeAbout"
 ];
 const byId = new Map(IDS.map((id) => [id, new El("div")]));
 const missingIds = [];

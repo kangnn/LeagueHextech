@@ -97,6 +97,8 @@
   .chip.floor { color: var(--warn); border-color: rgba(240, 184, 73, .30); }
   .chip.deadline { color: var(--dim); }
   .row { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+  /* The rows above set display:flex, which would beat the hidden attribute without this. */
+  [hidden] { display: none !important; }
   .row > .k { flex: none; }
   .error-row { color: var(--bad); }
   .error-row .v { color: var(--bad); word-break: break-word; }
@@ -160,6 +162,13 @@
   .line[data-tone="muted"] { border-left-color: rgba(255, 255, 255, .08); }
   .line[data-tone="muted"] .tag { color: var(--muted); background: var(--mute-dim); }
   .line[data-tone="muted"] .msg { color: var(--muted); }
+  .about-row { margin: 10px 0 0; }
+  dialog { background: var(--surface); color: var(--text-body); border: 1px solid var(--line-strong); border-radius: 10px; padding: 18px 22px; min-width: 320px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .55); }
+  dialog h3 { margin: 0 0 2px; font-size: 16px; color: var(--text-body); }
+  .about-sub { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+  .about-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px 16px; margin: 12px 0; font-size: 12.5px; }
+  .about-grid .k { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -203,6 +212,20 @@
     <div class="save-row"><button id="save" class="secondary">保存设置</button></div>
   </div>
 </details>
+
+<div class="about-row"><button id="about" class="ghost" type="button">关于 LeagueHextech</button></div>
+
+<dialog id="aboutDialog">
+  <h3>LeagueHextech</h3>
+  <p class="about-sub">海克斯乱斗 5v5 房间搜索器</p>
+  <div class="about-grid">
+    <span class="k">版本</span><span id="aboutVersion">—</span>
+    <span class="k">通道</span><span id="aboutChannel">—</span>
+    <span class="k">许可证</span><span>MIT</span>
+  </div>
+  <p class="about-sub">项目地址：github.com/kangnn/LeagueHextech</p>
+  <button id="closeAbout" class="secondary" type="button">关闭</button>
+</dialog>
 </main>
 
 <aside>
@@ -530,6 +553,18 @@ $("diagnose").onclick = async () => {
 $("checkUpdate").onclick = async () => {
   renderUpdate(await window.searcher.checkUpdate());
 };
+
+// The about dialog reads the live version from the updater state; the channel is derived from the
+// version shape, the same rule the updater itself uses to pick its feed file.
+$("about").onclick = async () => {
+  const status = await window.searcher.updateStatus().catch(() => undefined);
+  const version = status?.currentVersion ?? "";
+  $("aboutVersion").textContent = version ? `v${version}` : "未知";
+  $("aboutChannel").textContent = version.includes("-ci.") ? "开发版（跟随 dev 提交自动更新）" : "稳定版";
+  $("aboutDialog").showModal();
+};
+
+$("closeAbout").onclick = () => $("aboutDialog").close();
 
 $("installUpdate").onclick = async () => {
   // The app exits here; the installer takes over.
