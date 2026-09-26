@@ -171,6 +171,11 @@ check("the oldest lines are dropped from the DOM", log.children.some((child) => 
 
 document.getElementById("clearLog").onclick();
 check("clear empties the panel", log.children.length === 0 && document.getElementById("logCount").textContent === "0 条", `${log.children.length} / ${document.getElementById("logCount").textContent}`);
+fire({ type: "joining", state: "joining", message: "尝试加入" });
+document.getElementById("clearLog").onclick();
+check("clearing the log zeroes the aggregate too",
+  ["statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors"].every((id) => document.getElementById(id).textContent === "0"),
+  ["statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors"].map((id) => document.getElementById(id).textContent).join("/"));
 
 /* ---------- status rendering ---------- */
 fire({ type: "client-status", connected: false, message: "未检测到已登录的 League Client", checkedAt: Date.now() });

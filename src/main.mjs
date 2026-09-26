@@ -179,7 +179,19 @@ async function setUpdates() {
   updater.on("update-not-available", () => setUpdateState({ status: "uptodate", version: undefined, percent: undefined }));
   updater.on("download-progress", (progress) => setUpdateState({ status: "downloading", percent: Math.round(progress?.percent ?? 0) }));
   updater.on("update-downloaded", (info) => setUpdateState({ status: "ready", version: info?.version, percent: 100 }));
-  updater.on("error", (error) => setUpdateState({ status: "error", message: String(error?.message ?? error) }));
+  updater.on("error", (error) => {
+    const text = String(error?.message ?? error);
+    // electron-updater wraps errors and can carry the whole stack inside the message; the UI only
+    // needs the first line. And a dev channel that currently has nothing newer is the normal state,
+    // not a failure worth an alarm.
+    const code = error?.code ?? text.match(/ERR_UPDATER_[A-Z_]+/)?.[0];
+    if (code === "ERR_UPDATER_NO_PUBLISHED_VERSIONS") {
+      publish({ type: "warning", message: "更新：当前通道暂无可更新的版本" });
+      setUpdateState({ status: "uptodate" });
+      return;
+    }
+    setUpdateState({ status: "error", message: text.split("\n")[0] });
+  });
   updateState = { ...updateState, supported: true };
   return updater;
 }

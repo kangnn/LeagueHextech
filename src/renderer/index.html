@@ -506,6 +506,9 @@ clearLogButton.onclick = () => {
   logLines.length = 0;
   lastKey = "";
   repeats = 0;
+  // Clearing the panel clears the aggregate too: the numbers describe what the panel shows.
+  for (const key of Object.keys(counters)) counters[key] = 0;
+  for (const id of Object.values(COUNTER_IDS)) $(id).textContent = "0";
   refreshLog();
 };
 
