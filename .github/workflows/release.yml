@@ -1,0 +1,105 @@
+name: release
+
+# Every push to master builds the portable app and publishes it as a dev prerelease, the same way
+# LeagueAkari ships `league-akari-win-x64` from its CI. Stable releases stay manual: they are cut from
+# a `v*` tag (see the note at the bottom of this file).
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# One release build at a time, and never cancel one midway: a cancelled run can leave a partially
+# uploaded asset behind.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# The default token is read-only on newer repositories; publishing a release needs write.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Electron is the only dependency, and the packaging script copies its runtime straight out of
+      # node_modules - so this step is what makes the build possible at all.
+      - name: Install dependencies
+        run: npm ci
+
+      # A broken commit must never reach a download link.
+      - name: Test
+        run: npm test
+
+      # The tray icon is generated code that is committed. Regenerating it proves the committed copy is
+      # exactly what the generator produces, instead of drifting silently.
+      - name: Verify the generated tray icon is current
+        run: |
+          node scripts/make-tray-icon.mjs
+          git diff --exit-code src/tray-icon.mjs
+
+      - name: Build the portable app
+        run: npm run build:portable
+
+      # Release assets must be files, not folders, so the 317 MB portable build goes into one archive.
+      - name: Package it as a single archive
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            "$PWD/dist/LeagueHextech",
+            "$PWD/dist/league-hextech-win-x64.zip",
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $true)
+          $zip = Get-Item dist/league-hextech-win-x64.zip
+          "Packaged $($zip.Name): $([math]::Round($zip.Length / 1MB, 1)) MB"
+
+      - name: Publish a dev prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          $tag = "ci-$sha"
+          # Re-running the same commit must not fail on an existing tag.
+          gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { gh release delete $tag --yes --cleanup-tag }
+          gh release create $tag "dist/league-hextech-win-x64.zip" `
+            --target "${{ github.sha }}" `
+            --title "LeagueHextech Dev Prerelease #${{ github.run_number }} ($sha)" `
+            --prerelease `
+            --generate-notes
+          "Published: https://github.com/${{ github.repository }}/releases/tag/$tag"
+
+      # Each build adds a ~130 MB asset, so old dev prereleases are trimmed. Only `ci-*` tags are ever
+      # touched; stable `v*` releases are left alone. A failure here must not fail the build.
+      - name: Keep only the five newest dev prereleases
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $all = gh release list --limit 200 --json tagName,isPrerelease,createdAt | ConvertFrom-Json
+          $dev = $all | Where-Object { $_.isPrerelease -and $_.tagName -like 'ci-*' } |
+            Sort-Object createdAt -Descending
+          if ($dev.Count -gt 5) {
+            $dev | Select-Object -Skip 5 | ForEach-Object {
+              "Deleting $($_.tagName)"
+              gh release delete $_.tagName --yes --cleanup-tag
+            }
+          } else {
+            "Nothing to trim ($($dev.Count) dev prereleases)"
+          }
+
+# To cut a stable release, bump the version in package.json/CHANGELOG.md and push a tag:
+#   git tag v0.2.0 && git push origin v0.2.0
+# then publish it by hand (`gh release create v0.2.0 dist/league-hextech-win-x64.zip`), or add a
+# `tags: ['v*']` trigger here and publish with `--latest` instead of `--prerelease`.
