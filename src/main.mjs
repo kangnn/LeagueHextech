@@ -164,6 +164,8 @@ async function setUpdates() {
   updater.autoDownload = true;
   // A user who simply closes the window still ends up current the next time the app starts.
   updater.autoInstallOnAppQuit = true;
+  // There is no web-installer flow here, and the updater nags about it unless told so.
+  updater.disableWebInstaller = true;
   // A dev build (version like `0.1.3-ci.g<sha>`) follows the dev channel: electron-updater then reads
   // the `ci.yml` of the newest prerelease. A stable install keeps the default and never sees one.
   if (app.getVersion().includes("-")) updater.allowPrerelease = true;
@@ -188,6 +190,12 @@ async function setUpdates() {
     if (code === "ERR_UPDATER_NO_PUBLISHED_VERSIONS") {
       publish({ type: "warning", message: "更新：当前通道暂无可更新的版本" });
       setUpdateState({ status: "uptodate" });
+      return;
+    }
+    // A differential download that falls back to a full download is the updater recovering on its own
+    // (usually the previous build shipped without a blockmap), not a failure - the download continues.
+    if (text.includes("fallback to full download")) {
+      publish({ type: "warning", message: "更新：无法增量下载，本次改为完整下载" });
       return;
     }
     setUpdateState({ status: "error", message: text.split("\n")[0] });
