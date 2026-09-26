@@ -62,6 +62,14 @@ jobs:
       - name: Build the installer
         run: npm run build:installer
 
+      # The feed the installed app will poll. Printed so a broken publish config is visible in the log
+      # instead of only showing up as an app that never finds an update.
+      - name: Show the update feed baked into the app
+        shell: pwsh
+        run: |
+          Get-Content release/win-unpacked/resources/app-update.yml
+          Get-Content release/latest.yml
+
       # The portable folder stays available for people who would rather not install anything; it simply
       # cannot update itself.
       - name: Build the portable app
