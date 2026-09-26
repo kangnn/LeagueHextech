@@ -78,23 +78,40 @@ function buildTrayMenu() {
   const status = controller?.status() ?? {};
   const running = Boolean(status.running);
   const headline = `${STATE_LABELS[status.state] ?? "空闲"}${status.eligibleCount ? ` · 合格 ${status.eligibleCount}` : ""}`;
-  return Menu.buildFromTemplate([
+  const template = [
     { label: headline, enabled: false },
     { type: "separator" },
     { label: "显示主窗口", click: showWindow },
     { label: running ? "停止搜索" : "开始搜索", click: toggleSearch },
-    { type: "separator" },
-    { label: "退出", click: () => { isQuitting = true; app.quit(); } }
-  ]);
+    { type: "separator" }
+  ];
+  // The update entry only appears once there is something to do with it, and it is the restart-and-apply
+  // action that a downloaded update is waiting for.
+  if (updateState.status === "ready") {
+    template.push({ label: `重启并更新到 v${updateState.version}`, click: installUpdate });
+  } else if (updateState.supported) {
+    template.push({
+      label: updateState.status === "downloading" ? `正在下载更新 ${updateState.percent ?? 0}%` : "检查更新",
+      enabled: updateState.status !== "downloading" && updateState.status !== "checking",
+      click: () => { checkForUpdates(); }
+    });
+  }
+  template.push({ label: "退出", click: () => { isQuitting = true; app.quit(); } });
+  return Menu.buildFromTemplate(template);
 }
 
 // Rebuilding the menu on every event would be wasteful (events arrive every couple of seconds), so the
-// tray is only touched when something it displays actually changed.
+// tray is only touched when something it displays actually changed. Download progress is bucketed so a
+// long download does not rebuild the menu on every tick.
 let traySignature = "";
 function refreshTray() {
   if (!tray) return;
   const status = controller?.status() ?? {};
-  const signature = `${status.state}|${status.running}|${status.eligibleCount}|${clientStatus.connected}`;
+  const progress = updateState.percent === undefined ? "" : Math.floor(updateState.percent / 10);
+  const signature = [
+    status.state, status.running, status.eligibleCount, clientStatus.connected,
+    updateState.status, updateState.version ?? "", progress
+  ].join("|");
   if (signature === traySignature) return;
   traySignature = signature;
   tray.setToolTip(`LeagueHextech · ${STATE_LABELS[status.state] ?? "空闲"}`);
@@ -113,6 +130,79 @@ function createTray() {
   tray.on("click", toggleWindow);
   tray.on("double-click", showWindow);
   refreshTray();
+}
+
+/* ------------------------------ updates ------------------------------ */
+
+// electron-updater only exists in the installed build: electron-builder bundles it from `dependencies`,
+// while the hand-rolled portable folder ships no node_modules at all. The import is therefore allowed to
+// fail, and everything below degrades to "no updater" rather than breaking startup.
+let updater;
+let updateState = { supported: false, status: "idle" };
+
+function setUpdateState(next) {
+  updateState = { ...updateState, ...next };
+  publish({ type: "update", ...updateState });
+  refreshTray();
+}
+
+async function setUpdates() {
+  // Reported either way, so a manual check can say which version is current.
+  updateState = { ...updateState, currentVersion: app.getVersion() };
+  // A development run has no app-update.yml and no installed copy to replace.
+  if (!app.isPackaged) return undefined;
+  try {
+    ({ autoUpdater: updater } = await import("electron-updater"));
+  } catch {
+    // Portable folder: the way to update is to download a new build.
+    return undefined;
+  }
+  updater.autoDownload = true;
+  // A user who simply closes the window still ends up current the next time the app starts.
+  updater.autoInstallOnAppQuit = true;
+  // The updater's own chatter belongs in the event log, not on stdout.
+  updater.logger = {
+    info: () => {},
+    debug: () => {},
+    warn: (message) => publish({ type: "warning", message: `更新：${message}` }),
+    error: (message) => publish({ type: "error", message: `更新：${message}` })
+  };
+  updater.on("checking-for-update", () => setUpdateState({ status: "checking" }));
+  updater.on("update-available", (info) => setUpdateState({ status: "available", version: info?.version }));
+  updater.on("update-not-available", () => setUpdateState({ status: "uptodate", version: undefined, percent: undefined }));
+  updater.on("download-progress", (progress) => setUpdateState({ status: "downloading", percent: Math.round(progress?.percent ?? 0) }));
+  updater.on("update-downloaded", (info) => setUpdateState({ status: "ready", version: info?.version, percent: 100 }));
+  updater.on("error", (error) => setUpdateState({ status: "error", message: String(error?.message ?? error) }));
+  updateState = { ...updateState, supported: true };
+  return updater;
+}
+
+async function checkForUpdates() {
+  if (!updater) {
+    publish({ type: "warning", message: "当前是免安装版，不能自动更新；请到发布页下载新版本。" });
+    return { ...updateState, supported: false };
+  }
+  try {
+    await updater.checkForUpdates();
+  } catch (error) {
+    setUpdateState({ status: "error", message: String(error?.message ?? error) });
+  }
+  return updateState;
+}
+
+function installUpdate() {
+  if (!updater || updateState.status !== "ready") return false;
+  // The updater runs its own installer, so the app really has to exit here.
+  isQuitting = true;
+  setImmediate(() => updater.quitAndInstall(false, true));
+  return true;
+}
+
+function scheduleUpdateCheck() {
+  if (!updater) return;
+  // Late enough not to compete with client discovery at startup, then twice a day.
+  setTimeout(() => { checkForUpdates(); }, 20_000).unref?.();
+  setInterval(() => { checkForUpdates(); }, 6 * 60 * 60 * 1000).unref?.();
 }
 
 /* ------------------------------ window ------------------------------ */
@@ -214,6 +304,7 @@ function start() {
     createController();
     createWindow();
     createTray();
+    await setUpdates();
 
     ipcMain.handle("search:status", () => controller.status());
     ipcMain.handle("search:start", async () => {
@@ -234,8 +325,12 @@ function start() {
       controller.configure(await settings.update(partial));
       return settings.settings;
     });
+    ipcMain.handle("updates:status", () => updateState);
+    ipcMain.handle("updates:check", () => checkForUpdates());
+    ipcMain.handle("updates:install", () => installUpdate());
 
     scheduleClientCheck();
+    scheduleUpdateCheck();
     publish({ type: "client-status", ...(await refreshClientStatus()) });
   });
 }

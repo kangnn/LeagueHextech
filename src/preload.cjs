@@ -10,5 +10,8 @@ contextBridge.exposeInMainWorld("searcher", {
   diagnose: () => ipcRenderer.invoke("client:diagnose"),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   updateSettings: (settings) => ipcRenderer.invoke("settings:update", settings),
+  updateStatus: () => ipcRenderer.invoke("updates:status"),
+  checkUpdate: () => ipcRenderer.invoke("updates:check"),
+  installUpdate: () => ipcRenderer.invoke("updates:install"),
   onEvent: (listener) => ipcRenderer.on("search:event", (_event, value) => listener(value))
 });

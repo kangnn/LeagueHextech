@@ -2,6 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
+## [0.1.1] - 2026-09-26
+
+### 新增
+
+- **安装版 + 自动更新**：改用 electron-builder 产出 NSIS 安装包，内置 electron-updater。
+  应用启动 20 秒后自动检查更新，之后每 6 小时一次；发现新版本自动下载，下载完成后
+  界面出现「重启并更新」、托盘菜单出现「重启并更新到 vX.Y.Z」，也可随时点「检查更新」。
+  免安装版无法自我更新，会提示到发布页下载。
+
+### 改进
+
+- **exe 图标与版本信息**：以前发布出去的 exe 戴着 Electron 默认 logo，PE 里也没有产品信息。
+  现在图标（16/24/32/48/64/128/256 的 `pictures/icon.ico`，由脚本生成）与
+  ProductName / FileDescription / 产品与文件版本 / 版权声明都会写入 exe。
+- 安装包卸载时**不会**删除用户的设置与日志（`deleteAppDataOnUninstall: false`）。
+
+### 工程
+
+- CI 分两条通道：推送 `master` 出开发预发布（`ci-<sha>`），推送 `v*` 标签出正式版；
+  正式版额外携带 `latest.yml` 供自动更新读取，并且**校验标签与 package.json 版本一致**。
+- 免安装 zip 仍然照常发布，作为不想安装的用户的选择。
+
 ## [0.1.0] - 2026-09-26
 
 首个可用版本。

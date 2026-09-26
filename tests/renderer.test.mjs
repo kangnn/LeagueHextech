@@ -65,9 +65,10 @@ class El {
 }
 
 const IDS = [
-  "state", "log", "logCount", "clearLog", "start", "stop", "leave", "diagnose",
+  "state", "log", "logCount", "clearLog", "start", "stop", "leave", "diagnose", "checkUpdate",
   "client", "clientText", "refreshed", "sweeps", "selectionRow", "selection",
-  "errorRow", "error", "diagnostics", "pollIntervalMs", "minPlayers", "maxInvites",
+  "errorRow", "error", "updateRow", "updateText", "installUpdate", "diagnostics",
+  "pollIntervalMs", "minPlayers", "maxInvites",
   "stallTimeoutSec", "nameKeywords", "save", "settingsNow",
   "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors"
 ];
@@ -96,6 +97,9 @@ globalThis.window = {
     diagnose: async () => ({ ok: true, source: "client-log", port: 7252 }),
     getSettings: async () => settings,
     updateSettings: async () => settings,
+    updateStatus: async () => ({ supported: true, status: "idle", currentVersion: "0.1.1" }),
+    checkUpdate: async () => ({ supported: true, status: "uptodate", currentVersion: "0.1.1" }),
+    installUpdate: async () => true,
     onEvent: (fn) => { listener = fn; }
   }
 };
@@ -217,6 +221,37 @@ fire({ type: "stopped", state: "idle", running: false, selectedSummary: "房间 
 check("the current room row disappears when the search stops", document.getElementById("selectionRow").hidden === true);
 check("start is re-enabled and leave disabled when idle",
   document.getElementById("start").disabled === false && document.getElementById("leave").disabled === true);
+
+/* ---------- the update row ---------- */
+document.getElementById("clearLog").onclick();
+const updateRow = document.getElementById("updateRow");
+check("the update row is hidden while there is nothing to say", updateRow.hidden === true);
+
+fire({ type: "update", supported: true, status: "downloading", version: "0.1.2", percent: 42 });
+check("a download in flight shows the version and percentage",
+  document.getElementById("updateText").textContent === "正在下载 v0.1.2 42%", document.getElementById("updateText").textContent);
+check("the install button stays hidden until the download is done", document.getElementById("installUpdate").hidden === true);
+check("download progress stays out of the event log", log.children.length === 0, String(log.children.length));
+
+fire({ type: "update", supported: true, status: "ready", version: "0.1.2", percent: 100 });
+check("a downloaded update offers a restart action",
+  document.getElementById("updateText").textContent.includes("v0.1.2") && document.getElementById("installUpdate").hidden === false,
+  document.getElementById("updateText").textContent);
+check("a ready update is logged as good news",
+  log.children.length === 1 && log.children[0].dataset.tone === "ok", log.children[0]?.dataset.tone);
+
+fire({ type: "update", supported: true, status: "uptodate", currentVersion: "0.1.2" });
+check("a manual check that finds nothing says so",
+  document.getElementById("updateText").textContent.includes("已是最新版本"), document.getElementById("updateText").textContent);
+
+fire({ type: "update", supported: true, status: "error", message: "网络不可达" });
+check("an update failure is reported rather than swallowed",
+  document.getElementById("updateText").textContent.includes("网络不可达") && log.children[0].dataset.tone === "bad",
+  document.getElementById("updateText").textContent);
+
+fire({ type: "update", supported: false, status: "idle" });
+check("a build with no updater shows no update row", updateRow.hidden === true);
+check("the install action is gone once there is nothing to install", document.getElementById("installUpdate").hidden === true);
 
 rmSync(scriptPath, { force: true });
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

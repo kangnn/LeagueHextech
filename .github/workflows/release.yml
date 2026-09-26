@@ -1,15 +1,18 @@
 name: release
 
-# Every push to master builds the portable app and publishes it as a dev prerelease, the same way
-# LeagueAkari ships `league-akari-win-x64` from its CI. Stable releases stay manual: they are cut from
-# a `v*` tag (see the note at the bottom of this file).
+# Two channels, like LeagueAkari:
+#   * every push to master  -> a dev prerelease (`ci-<sha>`) carrying the installer and the portable zip
+#   * every `v*` tag        -> a stable release carrying the installer, `latest.yml` and the portable zip
+# `latest.yml` only ever lands on a stable release, and electron-updater ignores prereleases, so users
+# update along stable versions while dev builds stay test material.
 on:
   push:
     branches: [master]
+    tags: ['v*']
   workflow_dispatch:
 
-# One release build at a time, and never cancel one midway: a cancelled run can leave a partially
-# uploaded asset behind.
+# One build per ref at a time, and never cancel one midway: a cancelled run can leave a release with half
+# its assets uploaded.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -21,7 +24,7 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -30,8 +33,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      # Electron is the only dependency, and the packaging script copies its runtime straight out of
-      # node_modules - so this step is what makes the build possible at all.
       - name: Install dependencies
         run: npm ci
 
@@ -39,18 +40,34 @@ jobs:
       - name: Test
         run: npm test
 
-      # The tray icon is generated code that is committed. Regenerating it proves the committed copy is
-      # exactly what the generator produces, instead of drifting silently.
-      - name: Verify the generated tray icon is current
+      # The tray icon and the exe icon are generated code that is committed. Regenerating them proves the
+      # committed copies are exactly what the generator produces, instead of drifting silently.
+      - name: Verify the generated icons are current
         run: |
           node scripts/make-tray-icon.mjs
-          git diff --exit-code src/tray-icon.mjs
+          git diff --exit-code src/tray-icon.mjs pictures/icon.ico
 
+      # A tag that disagrees with package.json would produce an installer and a latest.yml that claim a
+      # different version than the release it is attached to, which breaks the updater for everyone.
+      - name: Check the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = "v" + (node -p "require('./package.json').version")
+          if ($version -ne "${{ github.ref_name }}") {
+            throw "tag ${{ github.ref_name }} does not match package.json ($version)"
+          }
+
+      # electron-builder: NSIS installer + resources/app-update.yml + latest.yml for the updater.
+      - name: Build the installer
+        run: npm run build:installer
+
+      # The portable folder stays available for people who would rather not install anything; it simply
+      # cannot update itself.
       - name: Build the portable app
         run: npm run build:portable
 
-      # Release assets must be files, not folders, so the 317 MB portable build goes into one archive.
-      - name: Package it as a single archive
+      - name: Package the portable folder as a single archive
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -59,10 +76,26 @@ jobs:
             "$PWD/dist/league-hextech-win-x64.zip",
             [System.IO.Compression.CompressionLevel]::Optimal,
             $true)
-          $zip = Get-Item dist/league-hextech-win-x64.zip
-          "Packaged $($zip.Name): $([math]::Round($zip.Length / 1MB, 1)) MB"
+          Get-ChildItem release, dist -Filter *.exe -Recurse | Select-Object Name, Length
+          Get-Item release/latest.yml, dist/league-hextech-win-x64.zip | Select-Object Name, Length
+
+      - name: Publish a stable release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            (Get-Item release/*.exe).FullName `
+            "release/latest.yml" `
+            "dist/league-hextech-win-x64.zip" `
+            --title "LeagueHextech ${{ github.ref_name }}" `
+            --latest `
+            --generate-notes
+          "Published: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
 
       - name: Publish a dev prerelease
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,7 +105,9 @@ jobs:
           # Re-running the same commit must not fail on an existing tag.
           gh release view $tag --json tagName 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) { gh release delete $tag --yes --cleanup-tag }
-          gh release create $tag "dist/league-hextech-win-x64.zip" `
+          gh release create $tag `
+            (Get-Item release/*.exe).FullName `
+            "dist/league-hextech-win-x64.zip" `
             --target "${{ github.sha }}" `
             --title "LeagueHextech Dev Prerelease #${{ github.run_number }} ($sha)" `
             --prerelease `
@@ -99,7 +134,9 @@ jobs:
             "Nothing to trim ($($dev.Count) dev prereleases)"
           }
 
-# To cut a stable release, bump the version in package.json/CHANGELOG.md and push a tag:
-#   git tag v0.2.0 && git push origin v0.2.0
-# then publish it by hand (`gh release create v0.2.0 dist/league-hextech-win-x64.zip`), or add a
-# `tags: ['v*']` trigger here and publish with `--latest` instead of `--prerelease`.
+# Cutting a stable release:
+#   npm version 0.1.2 --no-git-tag-version   # or edit package.json
+#   git commit -am "release: 0.1.2" && git push
+#   git tag v0.1.2 && git push origin v0.1.2
+# The tag push runs this workflow, which builds the installer, verifies the tag against package.json and
+# publishes the release with latest.yml - the file installed copies poll to update themselves.

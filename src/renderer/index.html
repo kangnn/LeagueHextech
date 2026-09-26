@@ -178,6 +178,7 @@
   <button id="stop" class="secondary" disabled>停止</button>
   <button id="leave" class="secondary" disabled>离开房间</button>
   <button id="diagnose" class="ghost" title="重新检测 League Client 连接">检测连接</button>
+  <button id="checkUpdate" class="ghost" title="检查是否有新版本">检查更新</button>
 </div>
 
 <div class="stats">
@@ -187,6 +188,7 @@
 
 <div class="row" id="selectionRow" hidden><span class="k">当前房间</span><span class="chips" id="selection"></span></div>
 <div class="row error-row" id="errorRow" hidden><span class="k">最近错误</span><span class="v" id="error"></span></div>
+<div class="row" id="updateRow" hidden><span class="k">更新</span><span class="v" id="updateText"></span><button id="installUpdate" class="secondary" hidden>重启并更新</button></div>
 <p class="diag" id="diagnostics" hidden></p>
 
 <details class="panel">
@@ -230,7 +232,7 @@ const LABELS = {
   "rejected-after-join": "验证失败退出", error: "请求失败", warning: "提示", configured: "设置已保存",
   "sweep-exhausted": "本轮结束", "room-gone": "房间已消失",
   "left-stale-room": "邀请额度用尽退出", "left-stalled-room": "人数不达标退出",
-  "diagnostics-ok": "连接正常", "client-status": "客户端状态"
+  "diagnostics-ok": "连接正常", "client-status": "客户端状态", update: "更新"
 };
 // Tone drives the colour of the left rule and the badge: accent = an action in progress (cyan),
 // info = routine scanning (neutral), ok = progress worth seeing, warn = a room given up on, bad = a failure.
@@ -250,7 +252,33 @@ const SOURCES = {
 /** Waiting in a room that is under the floor is a caution, not a success, even though the state is "joined". */
 function toneFor(event) {
   if (event.belowFloor && (event.type === "watching" || event.type === "joined")) return "warn";
+  if (event.type === "update") {
+    if (event.status === "error") return "bad";
+    if (event.status === "ready") return "ok";
+    if (event.status === "uptodate") return "muted";
+    return "accent";
+  }
   return TONES[event.type] ?? TONES[event.state] ?? "info";
+}
+
+/** One line for the update row; an empty string hides the row entirely. */
+function updateSummary(state) {
+  switch (state?.status) {
+    case "checking": return "正在检查更新…";
+    case "available": return `发现新版本 v${state.version}，开始下载…`;
+    case "downloading": return `正在下载 v${state.version ?? ""} ${state.percent ?? 0}%`;
+    case "ready": return `v${state.version} 已下载，重启即可完成更新`;
+    case "error": return `更新检查失败：${state.message ?? "未知错误"}`;
+    case "uptodate": return `已是最新版本（v${state.currentVersion ?? ""}）`;
+    default: return "";
+  }
+}
+
+function renderUpdate(state) {
+  const summary = updateSummary(state);
+  $("updateRow").hidden = summary === "";
+  $("updateText").textContent = summary;
+  $("installUpdate").hidden = state?.status !== "ready";
 }
 
 const $ = (id) => document.getElementById(id);
@@ -492,6 +520,15 @@ $("diagnose").onclick = async () => {
     : `${result.message} ${(result.attempts ?? []).join("；")}`;
 };
 
+$("checkUpdate").onclick = async () => {
+  renderUpdate(await window.searcher.checkUpdate());
+};
+
+$("installUpdate").onclick = async () => {
+  // The app exits here; the installer takes over.
+  await window.searcher.installUpdate();
+};
+
 $("save").onclick = async () => {
   const saved = await window.searcher.updateSettings({
     pollIntervalMs: Number($("pollIntervalMs").value),
@@ -516,6 +553,12 @@ function applySettings(settings) {
 
 window.searcher.onEvent((event) => {
   countEvent(event);
+  if (event.type === "update") {
+    renderUpdate(event);
+    // Download progress ticks constantly, so only the states worth remembering reach the log.
+    if (event.status !== "downloading") append(event);
+    return;
+  }
   if (event.type === "client-status") {
     renderClientStatus(event);
     return;
@@ -532,6 +575,7 @@ window.searcher.onEvent((event) => {
 });
 
 renderClientStatus(await window.searcher.clientStatus());
+renderUpdate(await window.searcher.updateStatus());
 applySettings(await window.searcher.getSettings());
 render(await window.searcher.status());
 </script>

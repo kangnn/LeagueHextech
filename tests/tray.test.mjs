@@ -143,5 +143,40 @@ check("the settings panel still exposes the stall timeout", /id="stallTimeoutSec
 check("the stall explanation still says 0 means no waiting", /填 0 = 不等待/.test(renderer));
 check("the mode setting is gone from the UI", !/modePolicy/.test(renderer));
 
+/* ---------- the updater wiring ---------- */
+// The updater must never be able to stop the app from starting: electron-updater only exists in the
+// installed build, and the portable folder has no node_modules at all.
+const preload = readFileSync(path.join(root, "src", "preload.cjs"), "utf8");
+const builder = readFileSync(path.join(root, "electron-builder.yml"), "utf8");
+const workflow = readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+
+check("electron-updater is a runtime dependency, so it is bundled into the installed app",
+  Boolean(pkg.dependencies?.["electron-updater"]), JSON.stringify(pkg.dependencies));
+check("electron-builder is only a development dependency",
+  Boolean(pkg.devDependencies?.["electron-builder"]) && !pkg.dependencies?.["electron-builder"]);
+check("the updater is loaded lazily and its absence is tolerated",
+  /await import\("electron-updater"\)/.test(main) && /catch \{[\s\S]{0,200}portable/i.test(main));
+check("a development run does not pretend to have an updater", /if \(!app\.isPackaged\) return undefined;/.test(main));
+check("a downloaded update can be applied on request", /quitAndInstall/.test(main));
+check("updates are checked at startup and twice a day",
+  /scheduleUpdateCheck\(\)/.test(main) && /6 \* 60 \* 60 \* 1000/.test(main));
+check("the tray offers the restart-and-update entry", /重启并更新到 v\$\{updateState\.version\}/.test(main));
+check("the renderer can check, apply and read update state",
+  /updates:check/.test(main) && /updates:install/.test(main) && /updates:status/.test(main) &&
+  /updateStatus: \(\) => ipcRenderer\.invoke\("updates:status"\)/.test(preload) &&
+  /installUpdate: \(\) => ipcRenderer\.invoke\("updates:install"\)/.test(preload));
+check("the installed app knows where to look for updates",
+  /provider: github/.test(builder) && /repo: LeagueHextech/.test(builder));
+check("the installer is an nsis build with a chosen install directory",
+  /target: nsis/.test(builder) && /allowToChangeInstallationDirectory: true/.test(builder));
+check("uninstalling keeps the user's settings", /deleteAppDataOnUninstall: false/.test(builder));
+check("latest.yml is only published with a stable release",
+  /release\/latest\.yml/.test(workflow) && /if: startsWith\(github\.ref, 'refs\/tags\/v'\)/.test(workflow));
+check("the dev channel publishes prereleases only",
+  /--prerelease/.test(workflow) && /if: \$\{\{ !startsWith\(github\.ref, 'refs\/tags\/v'\) \}\}/.test(workflow));
+check("a tag that disagrees with package.json fails the build",
+  /does not match package\.json/.test(workflow));
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

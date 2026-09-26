@@ -1,0 +1,47 @@
+# electron-builder configuration for the installer + auto-update distribution.
+#
+# The hand-rolled portable folder (`npm run build:portable`) stays as a second way to ship the app, but
+# only an installed copy can update itself: electron-updater replaces files under the installation
+# directory, which a folder someone unzipped somewhere has no guarantee of.
+appId: io.github.kangnn.leaguehextech
+productName: LeagueHextech
+copyright: 非官方粉丝工具，与 Riot Games 无关
+
+directories:
+  output: release
+  buildResources: build
+
+# Only the app's own code and its runtime dependencies ship; tests, scripts and pictures are development
+# material. electron-updater is a `dependencies` entry, so it is bundled automatically.
+files:
+  - src/**/*
+  - package.json
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: pictures/icon.ico
+  # The exe is unsigned: this only stamps the icon and version metadata into the PE resources.
+  signAndEditExecutable: true
+
+nsis:
+  # A wizard rather than a one-click installer, so the user can pick the location - and can see what is
+  # being installed, which matters more than usual for an unsigned build.
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: LeagueHextech
+  # Uninstalling must not silently delete the user's settings and logs.
+  deleteAppDataOnUninstall: false
+  artifactName: LeagueHextech-Setup-${version}.${ext}
+
+# Electron reads this back as `resources/app-update.yml`, which is what electron-updater uses to find
+# `latest.yml` on the GitHub release. Without it the packaged app cannot check for updates at all.
+publish:
+  provider: github
+  owner: kangnn
+  repo: LeagueHextech

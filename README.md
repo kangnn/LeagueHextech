@@ -24,7 +24,8 @@
 - **守候规则**：邀请记录数达上限（默认 50）且人数不足下限，或人数在停滞超时（默认 30 秒）内一人未增 → 自动退出并继续搜索。人数每增加一个都会重新计时。
 - **不碰你自己的房间**：开始搜索前你已在的房间只会被沿用并报告，工具**永不主动退出**你没有让它加入的房间。
 - **事件日志**：按事件类型着色（进行中/成功/放弃/失败），房间号、`3/10 人`、邀请数各是独立芯片，最多保留 200 条；日志上方有聚合统计（尝试 / 进入房间 / 放弃 / 跳过 / 失败）。
-- **系统托盘**：关闭窗口不退出，搜索继续在后台跑；左键点托盘显示/隐藏，右键菜单可开始/停止/退出。再次双击 exe 不会开出第二个实例，而是把已有窗口唤回来。
+- **系统托盘**：关闭窗口不退出，搜索继续在后台跑；左键点托盘显示/隐藏，右键菜单可开始/停止/检查更新/退出。再次双击 exe 不会开出第二个实例，而是把已有窗口唤回来。
+- **自动更新**（安装版）：启动 20 秒后检查一次，此后每 6 小时一次；有新版本自动下载，下载完成后界面出现「重启并更新」、托盘菜单出现「重启并更新到 vX.Y.Z」。也可以随时点「检查更新」。
 - **凭据只留在内存**：`remoting-auth-token` 与 `Authorization` 标头不写入设置、日志或界面。
 
 ## 运行
@@ -36,7 +37,21 @@ npm install
 npm start
 ```
 
-## 打包成免安装版
+## 安装版（推荐，可自动更新）
+
+从 [Releases](https://github.com/kangnn/LeagueHextech/releases/latest) 下载 `LeagueHextech-Setup-x.y.z.exe` 运行即可。安装程序会让你选择安装位置，卸载时**不会**删除你的设置与日志。
+
+想自己构建：
+
+```powershell
+npm run build:installer
+```
+
+产物在 `release\`：`LeagueHextech-Setup-x.y.z.exe` 与 `latest.yml`（`latest.yml` 是应用内自动更新读取的清单，只有正式版会附带）。
+
+## 免安装版
+
+不想安装就用这个：
 
 ```powershell
 npm run build:portable
@@ -44,7 +59,9 @@ npm run build:portable
 
 产物在 `dist\LeagueHextech\`，双击 `LeagueHextech.exe` 即可，约 317 MB（内含 Electron 运行时）。整个文件夹可以直接拷贝给别人，对方**不需要 Node 或 npm**。
 
-> exe 的文件图标仍是 Electron 默认图标（离线环境没有 rcedit 可改）；托盘与窗口图标是本项目自己画的。
+> 免安装版**不能自动更新**——它没有安装目录可供替换，点「检查更新」会提示你去发布页下载新版本。
+>
+> 另外，两种形态的 exe 都**没有代码签名**：exe 的图标与版本信息已经写入（不再是 Electron 默认 logo），但首次运行仍可能遇到 Windows SmartScreen 的「未知发布者」提示，点「更多信息 → 仍要运行」即可。
 
 ## 设置
 
@@ -95,19 +112,19 @@ LCU 在 `127.0.0.1` 上使用自签名证书，Electron 的 `net.fetch` 会以 `
 npm test
 ```
 
-三个套件，约 90 项断言，**不需要 Electron、不需要客户端、不需要 npm install 任何东西**：
+三个套件，约 110 项断言，**不需要 Electron、不需要客户端、不需要 npm install 任何东西**：
 
 | 文件 | 覆盖 |
 | --- | --- |
 | `tests/controller.test.mjs` | 筛选与排序规则、加入后判定、人数下限与停滞规则、邀请额度、`PARTY_INVITE_LIMIT` 冷却、请求重试策略、设置迁移 |
-| `tests/renderer.test.mjs` | 用 DOM 替身执行渲染层真实脚本：日志上限与重复合并、各类型配色、房间芯片、聚合统计、连接胶囊四态 |
-| `tests/tray.test.mjs` | 解码内嵌托盘图标 PNG 校验像素、托盘与"关闭缩到托盘"接线、单实例锁 |
+| `tests/renderer.test.mjs` | 用 DOM 替身执行渲染层真实脚本：日志上限与重复合并、各类型配色、房间芯片、聚合统计、连接胶囊四态、更新状态行 |
+| `tests/tray.test.mjs` | 解码内嵌托盘图标 PNG 校验像素、exe 图标容器结构、托盘与"关闭缩到托盘"接线、单实例锁、自动更新接线 |
 
 ## 项目结构
 
 ```
 src/
-  main.mjs              Electron 主进程：窗口、托盘、IPC、生命周期
+  main.mjs              Electron 主进程：窗口、托盘、更新、IPC、生命周期
   preload.cjs           受限的渲染层桥（不暴露任何凭据）
   lcu-discovery.mjs     自动发现 LCU 连接参数
   lcu-fetch.mjs         证书固定的 LCU HTTP 客户端（超时、重试、慢请求告警）
@@ -119,10 +136,13 @@ src/
   renderer/index.html   整个界面：布局、样式与事件渲染
   tray-icon.mjs         生成的内嵌托盘图标（base64 PNG）
 scripts/
-  build-portable.mjs    从 node_modules/electron 组装免安装目录
-  make-tray-icon.mjs    用纯 Node 画托盘图标（自写 PNG 编码）
+  build-portable.mjs    从 node_modules/electron 组装免安装目录，并用 rcedit 写入图标与版本
+  make-tray-icon.mjs    用纯 Node 画托盘图标与 exe 图标（自写 PNG/ICO 编码）
+electron-builder.yml    安装包（NSIS）与自动更新的构建配置
 tests/                  三个测试套件
-pictures/               README 用图
+pictures/               README 用图、生成的 icon.ico
+release/                安装包产物（不入库）
+dist/                   免安装产物（不入库）
 ```
 
 ## 已知限制
@@ -130,6 +150,7 @@ pictures/               README 用图
 - 客户端的公开房间列表**上限 100 条**，同一时刻房间更多时多出来的看不到，只能等下一次刷新。
 - 列表不含模式与成员信息，无法在加入前判断——这是客户端接口的限制。
 - 仅支持 Windows（国服客户端）。
+- **exe 没有代码签名**：图标与版本信息已写入，但首次运行仍可能被 SmartScreen 拦一次。
 - 未附许可证文件：**保留所有权利**。若要允许他人使用、修改或分发，需要补一份许可证。
 
 ## 免责声明
