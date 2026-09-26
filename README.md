@@ -138,6 +138,7 @@ src/
 scripts/
   build-portable.mjs    从 node_modules/electron 组装免安装目录，并用 rcedit 写入图标与版本
   make-tray-icon.mjs    用纯 Node 画托盘图标与 exe 图标（自写 PNG/ICO 编码）
+  publish-via-api.mjs   网络无法 git push 时，改用 Git Data API 发布提交（见下）
 electron-builder.yml    安装包（NSIS）与自动更新的构建配置
 tests/                  三个测试套件
 pictures/               README 用图、生成的 icon.ico
