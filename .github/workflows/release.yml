@@ -1,7 +1,7 @@
 name: release
 
 # Two update channels:
-#   * every push to master  -> a dev prerelease (`ci-<sha>`) whose version is `<base>-ci.g<sha>`;
+#   * every push to dev or master -> a dev prerelease (`ci-<sha>`) whose version is `<base>-ci.g<sha>`;
 #     it carries the installer, its blockmap and a `ci.yml` feed, so an installed dev build updates
 #     itself along dev commits (only the three newest dev prereleases are kept)
 #   * every `v*` tag        -> a stable release carrying the installer, its blockmap, `latest.yml`,
@@ -10,7 +10,7 @@ name: release
 # build reads `ci.yml` instead, which is what lets the two channels update independently.
 on:
   push:
-    branches: [master]
+    branches: [master, dev]
     tags: ['v*']
   workflow_dispatch:
 
