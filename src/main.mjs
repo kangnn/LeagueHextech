@@ -237,8 +237,11 @@ function scheduleUpdateCheck() {
 function createWindow() {
   window = new BrowserWindow({
     width: 1080, height: 700, resizable: true, minWidth: 880, minHeight: 560,
+    // The renderer draws its own titlebar (title, version, tool and window buttons), so the native
+    // one is hidden; the taskbar still shows `title`.
+    titleBarStyle: "hidden",
     title: "LeagueHextech",
-    backgroundColor: "#141416",
+    backgroundColor: "#101014",
     // Same drawing as the tray, so the window and taskbar stop showing the Electron logo.
     icon: createTrayImage(),
     webPreferences: { preload: path.join(here, "preload.cjs"), contextIsolation: true, nodeIntegration: false }
@@ -329,11 +332,11 @@ function start() {
     settings = SettingsStore.at(app.getPath("userData"));
     await settings.load();
     createController();
-    createWindow();
 
-    // Everything the window can ask for is registered before any optional feature runs. The 0.1.1 build
-    // registered these *after* the updater setup, so a single exception there left a window whose every
-    // button answered "No handler registered" - a nice-to-have must never be able to do that.
+    // Everything the window can ask for is registered *before the window exists*. The renderer starts
+    // firing IPC the moment it loads (the titlebar icon is fetched on module load), and the 0.1.1 build
+    // showed what a registration gap does: one exception there left a window whose every button
+    // answered "No handler registered" - a nice-to-have must never be able to do that.
     ipcMain.handle("search:status", () => controller.status());
     ipcMain.handle("search:start", async () => {
       await controller.start();
@@ -356,6 +359,14 @@ function start() {
     ipcMain.handle("updates:status", () => updateState);
     ipcMain.handle("updates:check", () => checkForUpdates());
     ipcMain.handle("updates:install", () => installUpdate());
+    // The renderer draws its own titlebar, so the window buttons live here. `close` still runs the
+    // close-to-tray handler instead of quitting.
+    ipcMain.handle("win:minimize", () => window?.minimize());
+    ipcMain.handle("win:maximize", () => (window?.isMaximized() ? window?.unmaximize() : window?.maximize()));
+    ipcMain.handle("win:close", () => window?.close());
+    ipcMain.handle("app:icon", () => `data:image/png;base64,${TRAY_ICON_32}`);
+
+    createWindow();
 
     createTray();
     scheduleClientCheck();

@@ -35,6 +35,7 @@ class El {
     this.title = "";
     this.hidden = false;
     this.value = "";
+    this.style = {};
     this.parent = undefined;
     this._text = "";
   }
@@ -71,12 +72,14 @@ const IDS = [
   "pollIntervalMs", "minPlayers", "maxInvites",
   "stallTimeoutSec", "nameKeywords", "save", "settingsNow",
   "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors",
-  "settings", "settingsDialog", "closeSettings", "toasts",
-  "tabSettings", "tabAbout", "pageSettings", "pageAbout", "aboutVersion", "aboutChannel"
+  "toasts", "topVersion",
+  "themeBtn", "themeMenu", "tbIcon",
+  "accentSwatches", "accentCustom", "winMin", "winMax", "winClose"
 ];
 const byId = new Map(IDS.map((id) => [id, new El("div")]));
 const missingIds = [];
 const document = {
+  documentElement: { style: { setProperty: () => {} } },
   getElementById(id) {
     if (!byId.has(id)) { missingIds.push(id); byId.set(id, new El("div")); }
     return byId.get(id);
@@ -116,7 +119,7 @@ check("the event listener was registered", typeof listener === "function");
 const helpBadges = (html.match(/class="help"/g) ?? []).length;
 check("every setting carries a visible hover explanation", helpBadges === 5, String(helpBadges));
 check("each explanation actually has text",
-  (html.match(/class="help" title="[^"]{10,}"/g) ?? []).length === 5, String((html.match(/class="help" title="[^"]{10,}"/g) ?? []).length));
+  (html.match(/class="help" data-tip="[^"]{10,}"/g) ?? []).length === 5, String((html.match(/class="help" data-tip="[^"]{10,}"/g) ?? []).length));
 check("the mode choice is gone (the browser never reports a mode)",
   !/modePolicy/.test(html), "modePolicy still present");
 check("the subtitle line is gone", !/class="sub"/.test(html), "sub still present");

@@ -13,5 +13,9 @@ contextBridge.exposeInMainWorld("searcher", {
   updateStatus: () => ipcRenderer.invoke("updates:status"),
   checkUpdate: () => ipcRenderer.invoke("updates:check"),
   installUpdate: () => ipcRenderer.invoke("updates:install"),
+  winMinimize: () => ipcRenderer.invoke("win:minimize"),
+  winMaximize: () => ipcRenderer.invoke("win:maximize"),
+  winClose: () => ipcRenderer.invoke("win:close"),
+  appIcon: () => ipcRenderer.invoke("app:icon"),
   onEvent: (listener) => ipcRenderer.on("search:event", (_event, value) => listener(value))
 });
