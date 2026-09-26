@@ -93,8 +93,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # The .blockmap is what lets electron-updater fetch only the changed blocks instead of the whole
+          # 88 MB installer; without it every update is a full download.
           gh release create "${{ github.ref_name }}" `
             (Get-Item release/*.exe).FullName `
+            (Get-Item release/*.exe.blockmap).FullName `
             "release/latest.yml" `
             "dist/league-hextech-win-x64.zip" `
             --title "LeagueHextech ${{ github.ref_name }}" `
