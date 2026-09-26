@@ -2,6 +2,22 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
+## [未发布]
+
+### 修复
+
+- **进入房间后人数显示 `8/14` 的口径错误。** 已进入房间的接口把上限报成 `maxLobbySize`，那是
+  **总席位**（10 个玩家位 + 客户端为自定义房间固定保留的 4 个观战位），房间浏览器里的 `x/10` 反而是
+  纯玩家位。现在按玩家位拆分：上限仍显示 10，超出部分归入观战容量。
+  - `src/lcu-provider.mjs`：`maxHumanPlayers` 钳在 10 个玩家位内；新增 `spectatorsAllowed`
+    （来自 `gameConfig.spectatorPolicy`，如 `AllAllowed`/`AllNotAllowed`）、`maxSpectators`、
+    `spectatorCount`（成员列表里被标记为观战的人数，不占玩家数）。
+
+### 新增
+
+- **观战开启的房间在日志里单独显示观战情况**：核对房间、守候房间等日志条目会多一枚
+  `观战 1/4` 徽章（当前观战人数/观战容量）；观战关闭或客户端未上报时不显示。
+
 ## [0.1.3] - 2026-09-26
 
 ### 修复

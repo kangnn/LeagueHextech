@@ -93,6 +93,7 @@
   .chip.room { color: #dcc48d; border-color: rgba(200, 170, 110, .30); background: rgba(200, 170, 110, .10); }
   .chip.count { color: var(--text-body); }
   .chip.invite { color: var(--warn); }
+  .chip.spectate { color: var(--dim); }
   .chip.floor { color: var(--warn); border-color: rgba(240, 184, 73, .30); }
   .chip.deadline { color: var(--dim); }
   .row { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; font-size: 12.5px; color: var(--muted); min-width: 0; }
@@ -331,6 +332,9 @@ function chipsFor(event) {
     chips.push(textChip(`${lobby.playerCount}/${max} 人`, "count"));
   }
   if (lobby?.inviteCount !== undefined) chips.push(textChip(`邀请 ${lobby.inviteCount}`, "invite"));
+  if (lobby?.spectatorsAllowed === true) {
+    chips.push(textChip(`观战 ${lobby.spectatorCount ?? 0}/${lobby.maxSpectators ?? "?"}`, "spectate"));
+  }
   if (event.count !== undefined && !lobby) chips.push(textChip(`${event.count} 个房间`, "count"));
   if (event.retryInMs) chips.push(textChip(`${Math.round(event.retryInMs / 1000)}s 后重试`));
   // How long the client took over an operation it answered anyway - a leave that takes ten seconds is

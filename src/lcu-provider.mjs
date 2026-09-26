@@ -31,6 +31,9 @@ async function describeRejection(response) {
   }
 }
 
+/** Player seat capacity of a 5v5 custom; a joined lobby adds the 4 reserved spectator seats on top. */
+const PLAYER_SLOTS = 10;
+
 function normalizeBrowserRow(raw) {
   return {
     id: String(raw.partyId ?? raw.id),
@@ -66,21 +69,61 @@ function countInvitations(invitations) {
   };
 }
 
+/**
+ * The client reports the spectator gate through `spectatorPolicy` (`AllAllowed`/`AllNotAllowed`,
+ * the CN client's values), with `allowSpectators` as a plain boolean on other builds. Undefined
+ * means the build reports neither, so the spectator state is simply unknown.
+ */
+function spectatorPolicyAllowed(config) {
+  const policy = config.spectatorPolicy;
+  if (typeof policy === "string" && policy) {
+    return !/notallowed|forbidden|none|denied|off/i.test(policy);
+  }
+  if (config.allowSpectators !== undefined) return config.allowSpectators !== false;
+  return undefined;
+}
+
+/**
+ * Spectators that joined the lobby sit in the member list flagged as such. When the build exposes
+ * no flag the count stays 0, which is also the honest reading: the observed member lists of this
+ * client only ever contain players.
+ */
+function countSpectatorMembers(members) {
+  if (!Array.isArray(members)) return 0;
+  return members.filter((member) => {
+    if (!member || typeof member !== "object") return false;
+    if (member.isSpectator === true) return true;
+    return String(member.position ?? member.firstPositionPreference ?? "").toUpperCase() === "SPECTATOR";
+  }).length;
+}
+
 function normalizeJoinedLobby(raw) {
   const config = raw.gameConfig ?? raw.configuration ?? {};
-  const players = raw.members ?? raw.participants ?? [];
+  const members = raw.members ?? raw.participants ?? [];
+  const spectatorCount = countSpectatorMembers(members);
   const passwordFlag = raw.hasPassword ?? config.passwordRequired ?? config.hasPassword;
-  // A joined lobby reports its limit through `maxLobbySize`; `maxHumanPlayers` is 0 there.
+  const spectatorsAllowed = spectatorPolicyAllowed(config);
+  // A joined lobby reports its limit through `maxLobbySize`, which is the *seat* total: the 10
+  // player slots plus the 4 spectator seats the client reserves, so a 5v5 room reports 14
+  // (`maxHumanPlayers` is 0 there). The player capacity is the part within the player slots.
+  const lobbySeats = Number(config.maxLobbySize) || 0;
   const maxHumanPlayers = Number(config.maxHumanPlayers) > 0
     ? Number(config.maxHumanPlayers)
-    : config.maxLobbySize;
+    : Math.min(lobbySeats, PLAYER_SLOTS) || undefined;
+  // Spectator capacity is the reserved 4; seats reported beyond the player slots agree with it.
+  const maxSpectators = spectatorsAllowed === true
+    ? Math.max(4, lobbySeats - (maxHumanPlayers ?? 0))
+    : Math.max(lobbySeats - (maxHumanPlayers ?? 0), 0);
   return {
     id: String(raw.partyId ?? raw.id ?? config.partyId),
     name: raw.lobbyName ?? config.customLobbyName ?? raw.name,
     mapId: config.mapId ?? raw.mapId,
     teamSize: config.teamSize ?? config.maxTeamSize ?? config.numPlayersPerTeam ?? raw.teamSize,
     maxHumanPlayers,
-    playerCount: Number(players.length || config.playerCount || 0),
+    spectatorsAllowed,
+    maxSpectators,
+    spectatorCount,
+    playerCount: Number(members.length || config.playerCount || 0) - spectatorCount,
     requiresPassword: passwordFlag === undefined ? undefined : passwordFlag === true,
     joinable: true,
     // Membership is proof the password gate no longer applies, so verification must not reject on it.

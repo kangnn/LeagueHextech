@@ -9,6 +9,9 @@
  * @property {number} [mapId]
  * @property {number} [teamSize]
  * @property {number} [maxHumanPlayers]
+ * @property {boolean} [spectatorsAllowed] spectator gate of a joined lobby; undefined when the client reports none
+ * @property {number} [maxSpectators] spectator seats the client reserves (4 for a 5v5 custom)
+ * @property {number} [spectatorCount] spectators currently in a joined lobby
  * @property {number} playerCount
  * @property {number} [inviteCount] every invitation record of a joined lobby; the client caps it at 50
  * @property {number} [pendingInviteCount] how many of those are still waiting for an answer
@@ -142,5 +145,9 @@ export function summarizeLobby(lobby) {
   if (lobby.mapId !== undefined) parts.push(`地图 ${lobby.mapId}`);
   if (lobby.gameMode) parts.push(`模式 ${lobby.gameMode}`);
   if (lobby.inviteCount !== undefined) parts.push(`邀请 ${lobby.inviteCount}`);
+  // Spectator state only exists for a joined lobby, and an unknown gate is not worth a log line.
+  if (lobby.spectatorsAllowed === true) {
+    parts.push(`观战 ${lobby.spectatorCount ?? 0}/${lobby.maxSpectators ?? "?"}`);
+  }
   return `房间 ${lobby.id}（${parts.join("，")}）`;
 }

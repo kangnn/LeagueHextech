@@ -7,7 +7,7 @@ import path from "node:path";
  */
 // Resolved from this file's own location, so the suite runs from a clone at any path.
 const root = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src")).href + "/";
-const { DEFAULT_POLICY, evaluateLobby, evaluateJoinedLobby, rankLobbies, isInviteBudgetExhausted } = await import(root + "eligibility.mjs");
+const { DEFAULT_POLICY, evaluateLobby, evaluateJoinedLobby, rankLobbies, isInviteBudgetExhausted, summarizeLobby } = await import(root + "eligibility.mjs");
 const { normalize, LcuCustomLobbyProvider } = await import(root + "lcu-provider.mjs");
 const { SearchController } = await import(root + "search-controller.mjs");
 const { DEFAULT_SETTINGS } = await import(root + "settings.mjs");
@@ -44,6 +44,33 @@ check("joined 2/10 with few invites is kept (waiting is the point)", evaluateJoi
 check("joined 50 invites + 2 players rejected", evaluateJoinedLobby(normalize(joined("p1", 2, 50)), policy).reason === "invites-exhausted");
 check("wrong mode rejected", evaluateJoinedLobby({ ...normalize(joined("p1", 8, 1)), gameMode: "CLASSIC" }, policy).reason === "not-mayhem-aram");
 check("invite guard ignores a room that filled up", !isInviteBudgetExhausted(normalize(joined("p1", 5, 50)), policy));
+
+// --- a joined lobby reports seat totals; the player capacity is the part inside the 10 slots ---
+const seats = (config, members = []) => normalize({
+  partyId: "seats",
+  gameConfig: { gameMode: "KIWI", mapId: 12, customMutatorName: "AllRandomPickStrategy", ...config },
+  members
+});
+const eightOfFourteen = seats(
+  { maxLobbySize: 14, spectatorPolicy: "AllAllowed" },
+  Array.from({ length: 8 }, (_, i) => ({ summonerId: i + 1 }))
+);
+check("maxLobbySize 14 with spectators on reports 10 player seats", eightOfFourteen.maxHumanPlayers === 10, String(eightOfFourteen.maxHumanPlayers));
+check("spectator capacity is the client's 4 reserved seats", eightOfFourteen.maxSpectators === 4, String(eightOfFourteen.maxSpectators));
+check("an open spectator gate is reported", eightOfFourteen.spectatorsAllowed === true);
+check("the summary shows spectators as 观战 0/4", summarizeLobby(eightOfFourteen).includes("观战 0/4"), summarizeLobby(eightOfFourteen));
+const spectatorsOff = seats({ maxLobbySize: 10, spectatorPolicy: "AllNotAllowed" });
+check("spectators off keeps 10 players and no spectator line", spectatorsOff.maxHumanPlayers === 10 && spectatorsOff.spectatorsAllowed === false && !summarizeLobby(spectatorsOff).includes("观战"), summarizeLobby(spectatorsOff));
+const noGateReported = seats({ maxLobbySize: 14 });
+check("a build without a spectator gate still reports 10 players", noGateReported.maxHumanPlayers === 10 && noGateReported.spectatorsAllowed === undefined, String(noGateReported.maxHumanPlayers));
+const withSpectatorMember = seats(
+  { maxLobbySize: 14, spectatorPolicy: "AllAllowed" },
+  [{ summonerId: 1, isSpectator: true }, { summonerId: 2 }, { summonerId: 3 }]
+);
+check("a flagged spectator member is counted and not counted as a player",
+  withSpectatorMember.spectatorCount === 1 && withSpectatorMember.playerCount === 2,
+  `count=${withSpectatorMember.spectatorCount} players=${withSpectatorMember.playerCount}`);
+check("the summary counts the spectator too", summarizeLobby(withSpectatorMember).includes("观战 1/4"), summarizeLobby(withSpectatorMember));
 
 // --- provider surfaces the client's error code ---
 const state = { rows: [row("p1", 1)], room: undefined, left: 0, joins: {}, joinError: {} };

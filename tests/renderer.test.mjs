@@ -147,6 +147,13 @@ check("a skipped room is amber-toned", log.children[0].dataset.tone === "warn");
 fire({ type: "left-stale-room", state: "searching", lobby: lobby("aaaabbbb-0000-0000-0000-000000000000", 3, 50), message: "邀请已达上限，人数仍为 3，已退出" });
 check("the invite count gets its own chip", log.children[0].querySelector(".invite")?.textContent === "邀请 50");
 
+fire({
+  type: "watching", state: "joined",
+  lobby: { ...lobby("aaaabbbb-0000-0000-0000-000000000000", 8, 21), spectatorsAllowed: true, maxSpectators: 4, spectatorCount: 1 },
+  message: "房间人数有变化"
+});
+check("an open spectator gate gets its own chip", log.children[0].querySelector(".spectate")?.textContent === "观战 1/4", log.children[0].querySelector(".spectate")?.textContent);
+
 const before = log.children.length;
 fire({ type: "searching", state: "searching", message: "本轮没有可用房间" });
 fire({ type: "searching", state: "searching", message: "本轮没有可用房间" });
