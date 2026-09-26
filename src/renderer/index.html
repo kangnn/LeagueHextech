@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
-<title>LeagueHextech · 海克斯乱斗房间搜索器</title>
+<title>LeagueHextech</title>
 <style>
   :root {
     color-scheme: dark;
@@ -48,10 +48,12 @@
   aside { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--line-strong); background: var(--panel); }
 
   /* ---------- header ---------- */
-  .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .top-side { display: flex; align-items: center; gap: 8px; }
+  .tool { width: 32px; height: 30px; padding: 0; font-size: 15px; line-height: 1; background: transparent; border: 1px solid var(--line-strong); color: var(--muted); font-weight: 400; }
+  .tool:hover { color: var(--text); }
   h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: .3px; }
   h1::after { content: ""; display: block; width: 42px; height: 2px; margin-top: 7px; border-radius: 1px; background: linear-gradient(90deg, var(--gold), rgba(200, 170, 110, 0)); }
-  h1 .cn { margin-left: 9px; font-size: 13px; font-weight: 400; color: var(--muted); }
   .pill { display: inline-flex; align-items: center; gap: 7px; flex: none; padding: 5px 11px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-2); font-size: 12.5px; color: var(--muted); white-space: nowrap; }
   .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
   .pill[data-state="on"] { color: var(--ok); border-color: rgba(95, 208, 138, .35); }
@@ -162,22 +164,37 @@
   .line[data-tone="muted"] { border-left-color: rgba(255, 255, 255, .08); }
   .line[data-tone="muted"] .tag { color: var(--muted); background: var(--mute-dim); }
   .line[data-tone="muted"] .msg { color: var(--muted); }
-  .about-row { margin: 10px 0 0; }
-  dialog { background: var(--surface); color: var(--text-body); border: 1px solid var(--line-strong); border-radius: 10px; padding: 18px 22px; min-width: 320px; }
+  .footer-row { margin: 10px 0 0; }
+  dialog { background: var(--surface); color: var(--text-body); border: 1px solid var(--line-strong); border-radius: 10px; padding: 16px 20px; min-width: 380px; }
   dialog::backdrop { background: rgba(0, 0, 0, .55); }
-  dialog h3 { margin: 0 0 2px; font-size: 16px; color: var(--text-body); }
-  .about-sub { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
-  .about-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px 16px; margin: 12px 0; font-size: 12.5px; }
+  .dlg-head { display: flex; align-items: baseline; gap: 10px; }
+  .dlg-head h3 { margin: 0; font-size: 15px; color: var(--text-body); }
+  .dlg-head .now { flex: 1; font-size: 12px; color: var(--muted); }
+  .dlg-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 10px 0 14px; }
+  .tab { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); padding: 5px 14px; font-weight: 400; }
+  .tab.active { color: var(--text-body); border-bottom-color: var(--accent); }
+  .about-page { text-align: center; padding: 8px 0 4px; }
+  .about-page h3 { margin: 0; font-size: 16px; color: var(--text-body); }
+  .about-sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .about-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px 16px; margin: 14px auto; max-width: 300px; font-size: 12.5px; text-align: left; }
   .about-grid .k { color: var(--muted); }
+  #toasts { position: fixed; top: 14px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+  .toast { background: var(--surface-2); border: 1px solid var(--line); border-left: 3px solid var(--accent); color: var(--text-body); padding: 8px 12px; border-radius: 6px; font-size: 12.5px; max-width: 420px; }
+  .toast.ok { border-left-color: #4ade80; }
+  .toast.bad { border-left-color: #f87171; }
 </style>
 </head>
 <body>
 <div class="app">
 <main>
 <div class="top">
-  <h1>LeagueHextech<span class="cn">海克斯乱斗 5v5 房间搜索器</span></h1>
-  <div class="pill" id="client" data-state="busy" title="自动检测：客户端日志 / lockfile / 客户端进程命令行，无需手填参数">
-    <span class="dot"></span><span id="clientText">检测中…</span>
+  <h1>LeagueHextech</h1>
+  <div class="top-side">
+    <div class="pill" id="client" data-state="busy" title="自动检测：客户端日志 / lockfile / 客户端进程命令行，无需手填参数">
+      <span class="dot"></span><span id="clientText">检测中…</span>
+    </div>
+    <button id="diagnose" class="tool" type="button" title="重新检测 League Client 连接">⟳</button>
+    <button id="checkUpdate" class="tool" type="button" title="检查是否有新版本">⇩</button>
   </div>
 </div>
 
@@ -187,8 +204,6 @@
   <button id="start">开始搜索</button>
   <button id="stop" class="secondary" disabled>停止</button>
   <button id="leave" class="secondary" disabled>离开房间</button>
-  <button id="diagnose" class="ghost" title="重新检测 League Client 连接">检测连接</button>
-  <button id="checkUpdate" class="ghost" title="检查是否有新版本">检查更新</button>
 </div>
 
 <div class="stats">
@@ -199,33 +214,44 @@
 <div class="row" id="selectionRow" hidden><span class="k">当前房间</span><span class="chips" id="selection"></span></div>
 <div class="row error-row" id="errorRow" hidden><span class="k">最近错误</span><span class="v" id="error"></span></div>
 <div class="row" id="updateRow" hidden><span class="k">更新</span><span class="v" id="updateText"></span><button id="installUpdate" class="secondary" hidden>重启并更新</button></div>
-<p class="diag" id="diagnostics" hidden></p>
 
-<details class="panel">
-  <summary>设置<span class="now" id="settingsNow"></span></summary>
-  <div class="grid">
-    <label><span class="k">轮询间隔(ms)<span class="help" title="多久重新拉取一次公开房间列表。500ms 反应最快，但客户端在加载对局时可能来不及应答而超时；遇到卡顿就调到 1000–2000。">?</span></span><input id="pollIntervalMs" type="number" min="500" max="60000" step="500"></label>
-    <label><span class="k">人数下限<span class="help" title="只看进入房间后的真实人数：低于这个数就算“人数不足”，只再等“停滞超时”那么久。列表里的人数只是快照，不作为进入条件。">?</span></span><input id="minPlayers" type="number" min="0" max="10" step="1"></label>
-    <label><span class="k">邀请上限<span class="help" title="一个派对的邀请记录上限（客户端固定 50）。邀请数达到这里设的值、人数又低于下限，就判定这个房间填不满并退出。填 0 = 不检查。">?</span></span><input id="maxInvites" type="number" min="0" max="500" step="10"></label>
-    <label><span class="k">停滞超时(秒)<span class="help" title="低于人数下限时最多等这么久，到点还没涨到下限就退出；人数每增加一个都会重新计时。填 0 = 不等待：一发现低于下限就立刻退出。想几乎一直等就设成 1800。">?</span></span><input id="stallTimeoutSec" type="number" min="0" max="1800" step="10"></label>
-    <label class="wide"><span class="k">房间名关键词<span class="help" title="房间名包含任意一个关键词才会尝试，逗号分隔（如 10刚,10钢）。留空 = 不按名字过滤，任何目标地图的公开房都会尝试。">?</span></span><input id="nameKeywords" type="text" size="22" placeholder="10刚,10钢"></label>
-    <div class="save-row"><button id="save" class="secondary">保存设置</button></div>
+<div class="footer-row"><button id="settings" class="ghost" type="button">⚙ 设置</button></div>
+
+<dialog id="settingsDialog">
+  <div class="dlg-head">
+    <h3>设置</h3>
+    <span class="now" id="settingsNow"></span>
+    <button id="closeSettings" class="ghost" type="button">关闭</button>
   </div>
-</details>
-
-<div class="about-row"><button id="about" class="ghost" type="button">关于 LeagueHextech</button></div>
-
-<dialog id="aboutDialog">
-  <h3>LeagueHextech</h3>
-  <p class="about-sub">海克斯乱斗 5v5 房间搜索器</p>
-  <div class="about-grid">
-    <span class="k">版本</span><span id="aboutVersion">—</span>
-    <span class="k">通道</span><span id="aboutChannel">—</span>
-    <span class="k">许可证</span><span>MIT</span>
+  <div class="dlg-tabs">
+    <button id="tabSettings" class="tab active" type="button">设置</button>
+    <button id="tabAbout" class="tab" type="button">关于</button>
   </div>
-  <p class="about-sub">项目地址：github.com/kangnn/LeagueHextech</p>
-  <button id="closeAbout" class="secondary" type="button">关闭</button>
+  <div id="pageSettings">
+    <div class="grid">
+      <label><span class="k">轮询间隔(ms)<span class="help" title="多久重新拉取一次公开房间列表。500ms 反应最快，但客户端在加载对局时可能来不及应答而超时；遇到卡顿就调到 1000–2000。">?</span></span><input id="pollIntervalMs" type="number" min="500" max="60000" step="500"></label>
+      <label><span class="k">人数下限<span class="help" title="只看进入房间后的真实人数：低于这个数就算“人数不足”，只再等“停滞超时”那么久。列表里的人数只是快照，不作为进入条件。">?</span></span><input id="minPlayers" type="number" min="0" max="10" step="1"></label>
+      <label><span class="k">邀请上限<span class="help" title="一个派对的邀请记录上限（客户端固定 50）。邀请数达到这里设的值、人数又低于下限，就判定这个房间填不满并退出。填 0 = 不检查。">?</span></span><input id="maxInvites" type="number" min="0" max="500" step="10"></label>
+      <label><span class="k">停滞超时(秒)<span class="help" title="低于人数下限时最多等这么久，到点还没涨到下限就退出；人数每增加一个都会重新计时。填 0 = 不等待：一发现低于下限就立刻退出。想几乎一直等就设成 1800。">?</span></span><input id="stallTimeoutSec" type="number" min="0" max="1800" step="10"></label>
+      <label class="wide"><span class="k">房间名关键词<span class="help" title="房间名包含任意一个关键词才会尝试，逗号分隔（如 10刚,10钢）。留空 = 不按名字过滤，任何目标地图的公开房都会尝试。">?</span></span><input id="nameKeywords" type="text" size="22" placeholder="10刚,10钢"></label>
+      <div class="save-row"><button id="save" class="secondary">保存设置</button></div>
+    </div>
+  </div>
+  <div id="pageAbout" hidden>
+    <div class="about-page">
+      <h3>LeagueHextech</h3>
+      <p class="about-sub">海克斯乱斗 5v5 房间搜索器</p>
+      <div class="about-grid">
+        <span class="k">版本</span><span id="aboutVersion">—</span>
+        <span class="k">通道</span><span id="aboutChannel">—</span>
+        <span class="k">许可证</span><span>MIT</span>
+      </div>
+      <p class="about-sub">项目地址：github.com/kangnn/LeagueHextech</p>
+    </div>
+  </div>
 </dialog>
+
+<div id="toasts"></div>
 </main>
 
 <aside>
@@ -298,11 +324,24 @@ function updateSummary(state) {
   }
 }
 
+// Transient feedback pops in the corner and dismisses itself; only states that need an action
+// (a download in flight, an update ready to install) earn a persistent row.
+function toast(message, kind = "info") {
+  const item = document.createElement("div");
+  item.className = `toast ${kind}`;
+  item.textContent = message;
+  $("toasts").append(item);
+  setTimeout(() => item.remove(), kind === "bad" ? 8000 : 4000);
+}
+
 function renderUpdate(state) {
-  const summary = updateSummary(state);
-  $("updateRow").hidden = summary === "";
-  $("updateText").textContent = summary;
+  const sticky = state?.status === "downloading" || state?.status === "ready";
+  $("updateRow").hidden = !sticky;
+  $("updateText").textContent = sticky ? updateSummary(state) : "";
   $("installUpdate").hidden = state?.status !== "ready";
+  if (state?.status === "uptodate") toast(`已是最新版本（v${state.currentVersion ?? ""}）`, "ok");
+  if (state?.status === "available") toast(`发现新版本 v${state.version}，开始下载…`);
+  if (state?.status === "error") toast(`更新检查失败：${state.message ?? "未知错误"}`, "bad");
 }
 
 const $ = (id) => document.getElementById(id);
@@ -430,10 +469,7 @@ function render(status) {
   const errorRow = $("errorRow");
   errorRow.hidden = !status.lastError;
   if (status.lastError) $("error").textContent = status.lastError;
-  if (status.diagnostics?.length) {
-    $("diagnostics").hidden = false;
-    $("diagnostics").textContent = status.diagnostics.join("；");
-  }
+  if (status.diagnostics?.length) toast(status.diagnostics.join("；"), "ok");
   startButton.disabled = Boolean(status.running) || status.state === "joined";
   stopButton.disabled = !status.running && status.state !== "joined";
   leaveButton.disabled = status.state !== "joined";
@@ -543,11 +579,9 @@ leaveButton.onclick = async () => render(await window.searcher.leave());
 
 $("diagnose").onclick = async () => {
   const result = await window.searcher.diagnose();
-  const diagnostics = $("diagnostics");
-  diagnostics.hidden = false;
-  diagnostics.textContent = result.ok
-    ? `已连接：来源 ${SOURCES[result.source] ?? result.source}，端口 ${result.port}${result.endpoint ? `，${result.endpoint}` : ""}`
-    : `${result.message} ${(result.attempts ?? []).join("；")}`;
+  toast(result.ok
+    ? `已连接：来源 ${SOURCES[result.source] ?? result.source}，端口 ${result.port}`
+    : `${result.message} ${(result.attempts ?? []).join("；")}`, result.ok ? "ok" : "bad");
 };
 
 $("checkUpdate").onclick = async () => {
@@ -556,15 +590,30 @@ $("checkUpdate").onclick = async () => {
 
 // The about dialog reads the live version from the updater state; the channel is derived from the
 // version shape, the same rule the updater itself uses to pick its feed file.
-$("about").onclick = async () => {
+// The settings dialog follows the LeagueAkari layout: a button in the corner opens a dialog with
+// a settings page and an about page, instead of the dialog living inline in the main column.
+$("settings").onclick = () => $("settingsDialog").showModal();
+$("closeSettings").onclick = () => $("settingsDialog").close();
+
+function switchSettingsPage(general) {
+  $("tabSettings").classList.toggle("active", general);
+  $("tabAbout").classList.toggle("active", !general);
+  $("pageSettings").hidden = !general;
+  $("pageAbout").hidden = general;
+}
+
+async function fillAboutPage() {
   const status = await window.searcher.updateStatus().catch(() => undefined);
   const version = status?.currentVersion ?? "";
   $("aboutVersion").textContent = version ? `v${version}` : "未知";
   $("aboutChannel").textContent = version.includes("-ci.") ? "开发版（跟随 dev 提交自动更新）" : "稳定版";
-  $("aboutDialog").showModal();
-};
+}
 
-$("closeAbout").onclick = () => $("aboutDialog").close();
+$("tabSettings").onclick = () => switchSettingsPage(true);
+$("tabAbout").onclick = () => {
+  switchSettingsPage(false);
+  fillAboutPage();
+};
 
 $("installUpdate").onclick = async () => {
   // The app exits here; the installer takes over.

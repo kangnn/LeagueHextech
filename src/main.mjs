@@ -237,7 +237,7 @@ function scheduleUpdateCheck() {
 function createWindow() {
   window = new BrowserWindow({
     width: 1080, height: 700, resizable: true, minWidth: 880, minHeight: 560,
-    title: "LeagueHextech · 海克斯乱斗房间搜索器",
+    title: "LeagueHextech",
     backgroundColor: "#141416",
     // Same drawing as the tray, so the window and taskbar stop showing the Electron logo.
     icon: createTrayImage(),

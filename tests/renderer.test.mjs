@@ -67,11 +67,12 @@ class El {
 const IDS = [
   "state", "log", "logCount", "clearLog", "start", "stop", "leave", "diagnose", "checkUpdate",
   "client", "clientText", "refreshed", "sweeps", "selectionRow", "selection",
-  "errorRow", "error", "updateRow", "updateText", "installUpdate", "diagnostics",
+  "errorRow", "error", "updateRow", "updateText", "installUpdate",
   "pollIntervalMs", "minPlayers", "maxInvites",
   "stallTimeoutSec", "nameKeywords", "save", "settingsNow",
   "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors",
-  "about", "aboutDialog", "aboutVersion", "aboutChannel", "closeAbout"
+  "settings", "settingsDialog", "closeSettings", "toasts",
+  "tabSettings", "tabAbout", "pageSettings", "pageAbout", "aboutVersion", "aboutChannel"
 ];
 const byId = new Map(IDS.map((id) => [id, new El("div")]));
 const missingIds = [];
@@ -254,13 +255,16 @@ check("a ready update is logged as good news",
   log.children.length === 1 && log.children[0].dataset.tone === "ok", log.children[0]?.dataset.tone);
 
 fire({ type: "update", supported: true, status: "uptodate", currentVersion: "0.1.2" });
-check("a manual check that finds nothing says so",
-  document.getElementById("updateText").textContent.includes("已是最新版本"), document.getElementById("updateText").textContent);
+check("a manual check that finds nothing pops a transient toast",
+  document.getElementById("updateRow").hidden === true &&
+  document.getElementById("toasts").children[0]?.textContent.includes("已是最新版本"),
+  document.getElementById("toasts").children[0]?.textContent);
 
 fire({ type: "update", supported: true, status: "error", message: "网络不可达" });
-check("an update failure is reported rather than swallowed",
-  document.getElementById("updateText").textContent.includes("网络不可达") && log.children[0].dataset.tone === "bad",
-  document.getElementById("updateText").textContent);
+check("an update failure is reported as a toast rather than swallowed",
+  document.getElementById("toasts").children[1]?.className.includes("bad") &&
+  document.getElementById("toasts").children[1]?.textContent.includes("网络不可达"),
+  document.getElementById("toasts").children[1]?.textContent);
 
 fire({ type: "update", supported: false, status: "idle" });
 check("a build with no updater shows no update row", updateRow.hidden === true);
