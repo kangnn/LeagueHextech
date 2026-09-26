@@ -120,6 +120,41 @@ function encodePng(size, pixels) {
 const png16 = encodePng(16, draw(16));
 const png32 = encodePng(32, draw(32));
 
+/**
+ * Packs PNGs into a Windows .ico container.
+ *
+ * The ICO format is a small directory followed by the image payloads, and since Vista an entry may hold
+ * a PNG verbatim - so no BMP encoding is needed here. Every size is drawn independently (never scaled),
+ * because a hexagon ring turns to mush when it is resampled.
+ */
+function encodeIco(images) {
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0);              // reserved
+  header.writeUInt16LE(1, 2);              // type: icon
+  header.writeUInt16LE(images.length, 4);
+  const entries = [];
+  let offset = 6 + images.length * 16;
+  for (const { size, buffer } of images) {
+    const entry = Buffer.alloc(16);
+    entry[0] = size >= 256 ? 0 : size;     // width, 0 meaning 256
+    entry[1] = size >= 256 ? 0 : size;     // height
+    entry.writeUInt16LE(1, 4);             // colour planes
+    entry.writeUInt16LE(32, 6);            // bits per pixel
+    entry.writeUInt32LE(buffer.length, 8);
+    entry.writeUInt32LE(offset, 12);
+    offset += buffer.length;
+    entries.push(entry);
+  }
+  return Buffer.concat([header, ...entries, ...images.map((image) => image.buffer)]);
+}
+
+// The exe icon is picked by Windows from this file, so it carries every size Explorer, the taskbar and
+// the Alt-Tab switcher may ask for.
+const icoSizes = [16, 24, 32, 48, 64, 128, 256];
+const icoPath = path.join(projectRoot, "pictures", "icon.ico");
+writeFileSync(icoPath, encodeIco(icoSizes.map((size) => ({ size, buffer: encodePng(size, draw(size)) }))));
+console.log(`wrote ${path.relative(projectRoot, icoPath)} (${icoSizes.join("/")})`);
+
 // `--preview <file>` renders the same drawing large enough to actually look at, for eyeballing changes.
 const previewIndex = process.argv.indexOf("--preview");
 if (previewIndex !== -1 && process.argv[previewIndex + 1]) {

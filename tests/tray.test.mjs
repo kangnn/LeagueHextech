@@ -75,6 +75,35 @@ for (let y = 0; y < 16; y += 1) for (let x = 0; x < 16; x += 1) if (png16.pixel(
 check("the 16px icon still has enough ink to read", opaque > 40 && opaque < 150, String(opaque));
 check("the two sizes are different drawings", TRAY_ICON_16 !== TRAY_ICON_32);
 
+/* ---------- the exe icon container ---------- */
+// Windows takes the exe's icon out of this file, so a malformed container silently means an unbranded
+// download - exactly what makes an unsigned binary look untrustworthy.
+const ico = readFileSync(path.join(root, "pictures", "icon.ico"));
+check("the ico opens with an icon directory header",
+  ico.readUInt16LE(0) === 0 && ico.readUInt16LE(2) === 1, `${ico.readUInt16LE(0)}/${ico.readUInt16LE(2)}`);
+const icoCount = ico.readUInt16LE(4);
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+const icoSizes = [];
+let icoEntriesOk = true;
+for (let i = 0; i < icoCount; i += 1) {
+  const at = 6 + i * 16;
+  const width = ico[at] === 0 ? 256 : ico[at];
+  const length = ico.readUInt32LE(at + 8);
+  const offset = ico.readUInt32LE(at + 12);
+  icoSizes.push(width);
+  if (!ico.subarray(offset, offset + 4).equals(PNG_SIGNATURE)) icoEntriesOk = false;
+  if (offset + length > ico.length) icoEntriesOk = false;
+}
+check("it carries the sizes Explorer, the taskbar and Alt-Tab ask for",
+  icoSizes.join("/") === "16/24/32/48/64/128/256", icoSizes.join("/"));
+check("every entry is an in-bounds PNG payload", icoEntriesOk, icoSizes.join("/"));
+
+const build = readFileSync(path.join(root, "scripts", "build-portable.mjs"), "utf8");
+check("the build writes the icon into the exe", /applyBranding\(appExe/.test(build));
+check("the build points rcedit at the generated ico", /"pictures", "icon\.ico"/.test(build));
+check("the build also stamps product and file version", /"product-version"/.test(build) && /"file-version"/.test(build));
+check("a missing rcedit only warns instead of failing the build", /跳过 exe 图标/.test(build));
+
 /* ---------- wiring ---------- */
 const main = readFileSync(path.join(root, "src", "main.mjs"), "utf8");
 const renderer = readFileSync(path.join(root, "src", "renderer", "index.html"), "utf8");
