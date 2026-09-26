@@ -93,17 +93,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $tag = "${{ github.ref_name }}"
           # The .blockmap is what lets electron-updater fetch only the changed blocks instead of the whole
-          # 88 MB installer; without it every update is a full download.
-          gh release create "${{ github.ref_name }}" `
+          # installer; without it every update is a full download.
+          gh release create $tag `
             (Get-Item release/*.exe).FullName `
             (Get-Item release/*.exe.blockmap).FullName `
             "release/latest.yml" `
             "dist/league-hextech-win-x64.zip" `
-            --title "LeagueHextech ${{ github.ref_name }}" `
+            --title "LeagueHextech $tag" `
             --latest `
             --generate-notes
-          "Published: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+          # GitHub already lists each asset's digest, but an unsigned build needs the user to be able to
+          # check it themselves - so the notes carry the values and the command.
+          $lines = @("", "## 文件校验值（SHA-256）", "")
+          foreach ($file in @((Get-Item release/*.exe), (Get-Item dist/league-hextech-win-x64.zip))) {
+            $lines += "- $($file.Name)：$((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower())"
+          }
+          $lines += ""
+          $lines += "校验方法：certutil -hashfile 文件名 SHA256"
+          $body = (gh release view $tag --json body | ConvertFrom-Json).body
+          gh release edit $tag --notes ($body + ($lines -join "`n"))
+          "Published: https://github.com/${{ github.repository }}/releases/tag/$tag"
 
       - name: Publish a dev prerelease
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

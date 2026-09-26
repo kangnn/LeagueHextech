@@ -1,11 +1,11 @@
 {
   "name": "league-hextech",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "LeagueHextech · 海克斯乱斗 5v5 房间搜索器",
   "author": {
-    "name": "kangn",
+    "name": "LeagueHextech",
     "email": "albertdk@163.com"
   },
   "main": "src/main.mjs",
@@ -38,5 +38,6 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
-  }
+  },
+  "license": "MIT"
 }
