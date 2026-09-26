@@ -7,6 +7,7 @@ import { discoverLcuConnection } from "./lcu-discovery.mjs";
 import { LcuCustomLobbyProvider } from "./lcu-provider.mjs";
 import { SearchController } from "./search-controller.mjs";
 import { SettingsStore } from "./settings.mjs";
+import { resolveAutoUpdater } from "./updater-loader.mjs";
 import { TRAY_ICON_16, TRAY_ICON_32 } from "./tray-icon.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -152,11 +153,14 @@ async function setUpdates() {
   // A development run has no app-update.yml and no installed copy to replace.
   if (!app.isPackaged) return undefined;
   try {
-    ({ autoUpdater: updater } = await import("electron-updater"));
+    updater = resolveAutoUpdater(await import("electron-updater"));
   } catch {
     // Portable folder: the way to update is to download a new build.
     return undefined;
   }
+  // `autoUpdater` is only a property of the module's default export under ESM; treating it as a named
+  // export is what made 0.1.1 a dead window (see src/updater-loader.mjs).
+  if (!updater) return undefined;
   updater.autoDownload = true;
   // A user who simply closes the window still ends up current the next time the app starts.
   updater.autoInstallOnAppQuit = true;
@@ -303,9 +307,10 @@ function start() {
     await settings.load();
     createController();
     createWindow();
-    createTray();
-    await setUpdates();
 
+    // Everything the window can ask for is registered before any optional feature runs. The 0.1.1 build
+    // registered these *after* the updater setup, so a single exception there left a window whose every
+    // button answered "No handler registered" - a nice-to-have must never be able to do that.
     ipcMain.handle("search:status", () => controller.status());
     ipcMain.handle("search:start", async () => {
       await controller.start();
@@ -329,8 +334,14 @@ function start() {
     ipcMain.handle("updates:check", () => checkForUpdates());
     ipcMain.handle("updates:install", () => installUpdate());
 
+    createTray();
     scheduleClientCheck();
-    scheduleUpdateCheck();
+    // Deliberately not awaited, and wrapped: the updater is optional, so neither a slow import nor a
+    // failure inside it can delay or break the rest of startup.
+    setUpdates()
+      .then(() => scheduleUpdateCheck())
+      .catch((error) => publish({ type: "warning", message: `更新器初始化失败：${error?.message ?? error}` }));
+
     publish({ type: "client-status", ...(await refreshClientStatus()) });
   });
 }

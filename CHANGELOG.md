@@ -2,6 +2,25 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
+## [0.1.3] - 2026-09-26
+
+### 修复
+
+- **修复 0.1.1 安装版"窗口能开、但什么都点不动"的问题。**
+  原因有两层：`electron-updater` 在 ESM 下**没有 `autoUpdater` 具名导出**（解构得到 `undefined`，随后
+  `updater.autoDownload = true` 抛 `TypeError`）；而这个异常发生在**注册 IPC 处理器之前**，于是
+  `whenReady` 链被打断，一个处理器都没注册——界面表现为右上角永远"检测中…"、设置框空白、点任何
+  按钮都报 `No handler registered for 'search:start'`。
+  - `src/updater-loader.mjs`：同时接受具名导出与 `default.autoUpdater` 两种形状。
+  - **IPC 处理器注册全部提到可选功能之前**；更新器初始化不再被 `await`，且失败只记录一条警告。
+  - 新增 6 项用例：导出形状解析（两种形状 + 缺失时返回 undefined）、处理器必须先于更新器注册、
+    更新器不得被 `await`、缺失 `autoUpdater` 不得当成错误。
+
+### 说明
+
+- 0.1.1 无法自行更新（它的更新器从未初始化成功），本版需要**手动安装**一次；安装程序会就地覆盖
+  0.1.1，设置（`%APPDATA%\league-hextech`）保留。
+
 ## [0.1.2] - 2026-09-26
 
 ### 新增

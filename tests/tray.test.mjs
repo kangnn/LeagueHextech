@@ -178,5 +178,28 @@ check("the dev channel publishes prereleases only",
 check("a tag that disagrees with package.json fails the build",
   /does not match package\.json/.test(workflow));
 
+/* ---------- the updater must never be able to break startup ---------- */
+// 0.1.1 shipped a window that could do nothing: `import("electron-updater")` has no `autoUpdater` named
+// export under ESM, the resulting `undefined.autoDownload = true` threw, and because the setup ran before
+// the IPC handlers were registered, every button answered "No handler registered".
+const { resolveAutoUpdater } = await import(new URL("../src/updater-loader.mjs", import.meta.url).href);
+const fakeUpdater = { on: () => {} };
+check("autoUpdater is found on the default export (the shape ESM actually provides)",
+  resolveAutoUpdater({ default: { autoUpdater: fakeUpdater } }) === fakeUpdater);
+check("autoUpdater is still found as a named export (the CommonJS shape)",
+  resolveAutoUpdater({ autoUpdater: fakeUpdater }) === fakeUpdater);
+check("a module without autoUpdater resolves to nothing instead of throwing",
+  resolveAutoUpdater({ AppUpdater: class {} }) === undefined && resolveAutoUpdater(undefined) === undefined);
+
+const startHandlerAt = main.indexOf('ipcMain.handle("search:start"');
+const updaterCallAt = main.indexOf("\n    setUpdates()");
+check("the window's IPC handlers are registered before the updater is touched",
+  startHandlerAt !== -1 && updaterCallAt !== -1 && startHandlerAt < updaterCallAt,
+  `handler=${startHandlerAt} updater=${updaterCallAt}`);
+check("the updater setup is not awaited, so it cannot stall or abort startup",
+  !/await setUpdates\(\)/.test(main) && /setUpdates\(\)[\s\S]{0,120}\.catch\(/.test(main));
+check("a missing autoUpdater is treated as 'no updater' rather than as an error",
+  /if \(!updater\) return undefined;/.test(main));
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
