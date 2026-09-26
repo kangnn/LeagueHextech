@@ -164,6 +164,9 @@ async function setUpdates() {
   updater.autoDownload = true;
   // A user who simply closes the window still ends up current the next time the app starts.
   updater.autoInstallOnAppQuit = true;
+  // A dev build (version like `0.1.3-ci.g<sha>`) follows the dev channel: electron-updater then reads
+  // the `ci.yml` of the newest prerelease. A stable install keeps the default and never sees one.
+  if (app.getVersion().includes("-")) updater.allowPrerelease = true;
   // The updater's own chatter belongs in the event log, not on stdout.
   updater.logger = {
     info: () => {},

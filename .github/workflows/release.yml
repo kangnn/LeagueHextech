@@ -1,10 +1,13 @@
 name: release
 
-# Two channels, like LeagueAkari:
-#   * every push to master  -> a dev prerelease (`ci-<sha>`) carrying the installer and the portable zip
-#   * every `v*` tag        -> a stable release carrying the installer, `latest.yml` and the portable zip
-# `latest.yml` only ever lands on a stable release, and electron-updater ignores prereleases, so users
-# update along stable versions while dev builds stay test material.
+# Two update channels:
+#   * every push to master  -> a dev prerelease (`ci-<sha>`) whose version is `<base>-ci.g<sha>`;
+#     it carries the installer, its blockmap and a `ci.yml` feed, so an installed dev build updates
+#     itself along dev commits (only the three newest dev prereleases are kept)
+#   * every `v*` tag        -> a stable release carrying the installer, its blockmap, `latest.yml`,
+#     a `ci.yml` copy and the portable zip
+# `latest.yml` only ever lands on a stable release, so stable installs never see prereleases; a dev
+# build reads `ci.yml` instead, which is what lets the two channels update independently.
 on:
   push:
     branches: [master]
@@ -58,6 +61,17 @@ jobs:
             throw "tag ${{ github.ref_name }} does not match package.json ($version)"
           }
 
+      # A dev build gets a version of its own: the sha makes every dev build distinct, and the `-ci.`
+      # prerelease tag puts it on the dev channel - electron-builder then writes `ci.yml` instead of
+      # `latest.yml`, so a stable install never sees it.
+      - name: Set the dev channel version
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version.split('-')[0]")-ci.g${GITHUB_SHA::7}"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$version';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "Dev version: $version"
+
       # electron-builder: NSIS installer + resources/app-update.yml + latest.yml for the updater.
       - name: Build the installer
         run: npm run build:installer
@@ -68,7 +82,7 @@ jobs:
         shell: pwsh
         run: |
           Get-Content release/win-unpacked/resources/app-update.yml
-          Get-Content release/latest.yml
+          if (Test-Path release/latest.yml) { Get-Content release/latest.yml } else { Get-Content release/ci.yml }
 
       # The portable folder stays available for people who would rather not install anything; it simply
       # cannot update itself.
@@ -96,10 +110,14 @@ jobs:
           $tag = "${{ github.ref_name }}"
           # The .blockmap is what lets electron-updater fetch only the changed blocks instead of the whole
           # installer; without it every update is a full download.
+          # A copy of latest.yml as ci.yml gives the dev channel a feed that points at the stable release,
+          # so a dev build converges onto stable instead of erroring on a missing channel file.
+          Copy-Item release/latest.yml release/ci.yml
           gh release create $tag `
             (Get-Item release/*.exe).FullName `
             (Get-Item release/*.exe.blockmap).FullName `
             "release/latest.yml" `
+            "release/ci.yml" `
             "dist/league-hextech-win-x64.zip" `
             --title "LeagueHextech $tag" `
             --latest `
@@ -129,16 +147,19 @@ jobs:
           if ($LASTEXITCODE -eq 0) { gh release delete $tag --yes --cleanup-tag }
           gh release create $tag `
             (Get-Item release/*.exe).FullName `
+            (Get-Item release/*.exe.blockmap).FullName `
+            "release/ci.yml" `
             "dist/league-hextech-win-x64.zip" `
             --target "${{ github.sha }}" `
             --title "LeagueHextech Dev Prerelease #${{ github.run_number }} ($sha)" `
             --prerelease `
             --generate-notes
-          "Published: https://github.com/${{ github.repository }}/releases/tag/$tag"
+        "Published: https://github.com/${{ github.repository }}/releases/tag/$tag"
 
-      # Each build adds a ~130 MB asset, so old dev prereleases are trimmed. Only `ci-*` tags are ever
-      # touched; stable `v*` releases are left alone. A failure here must not fail the build.
-      - name: Keep only the five newest dev prereleases
+      # Each build adds a ~130 MB asset, so old dev prereleases are trimmed down to three.
+      # Only `ci-*` tags are ever touched; stable `v*` releases are left alone. A failure here must not
+      # fail the build.
+      - name: Keep only the three newest dev prereleases
         shell: pwsh
         continue-on-error: true
         env:
@@ -147,8 +168,8 @@ jobs:
           $all = gh release list --limit 200 --json tagName,isPrerelease,createdAt | ConvertFrom-Json
           $dev = $all | Where-Object { $_.isPrerelease -and $_.tagName -like 'ci-*' } |
             Sort-Object createdAt -Descending
-          if ($dev.Count -gt 5) {
-            $dev | Select-Object -Skip 5 | ForEach-Object {
+          if ($dev.Count -gt 3) {
+            $dev | Select-Object -Skip 3 | ForEach-Object {
               "Deleting $($_.tagName)"
               gh release delete $_.tagName --yes --cleanup-tag
             }
