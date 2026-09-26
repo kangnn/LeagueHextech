@@ -154,7 +154,7 @@ jobs:
             --title "LeagueHextech Dev Prerelease #${{ github.run_number }} ($sha)" `
             --prerelease `
             --generate-notes
-        "Published: https://github.com/${{ github.repository }}/releases/tag/$tag"
+          "Published: https://github.com/${{ github.repository }}/releases/tag/$tag"
 
       # Each build adds a ~130 MB asset, so old dev prereleases are trimmed down to three.
       # Only `ci-*` tags are ever touched; stable `v*` releases are left alone. A failure here must not
