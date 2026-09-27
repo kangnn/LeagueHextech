@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld("searcher", {
   updateSettings: (settings) => ipcRenderer.invoke("settings:update", settings),
   updateStatus: () => ipcRenderer.invoke("updates:status"),
   checkUpdate: () => ipcRenderer.invoke("updates:check"),
+  downloadUpdate: () => ipcRenderer.invoke("updates:download"),
+  skipUpdateVersion: (version) => ipcRenderer.invoke("updates:skip-version", version),
   installUpdate: () => ipcRenderer.invoke("updates:install"),
   winMinimize: () => ipcRenderer.invoke("win:minimize"),
   winMaximize: () => ipcRenderer.invoke("win:maximize"),

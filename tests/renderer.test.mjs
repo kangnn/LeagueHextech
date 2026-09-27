@@ -69,6 +69,7 @@ const IDS = [
   "state", "log", "logCount", "clearLog", "start", "stop", "leave", "restart", "diagnose", "checkUpdate",
   "client", "clientText", "refreshed", "sweeps", "selectionRow", "selection",
   "errorRow", "error", "updateRow", "updateText", "installUpdate",
+  "updatePromptRow", "updatePromptText", "downloadUpdate", "skipUpdate", "laterUpdate",
   "pollIntervalMs", "minPlayers", "maxInvites",
   "stallTimeoutSec", "nameKeywords", "save", "settingsNow",
   "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors",
@@ -104,6 +105,8 @@ globalThis.window = {
     updateSettings: async () => settings,
     updateStatus: async () => ({ supported: true, status: "idle", currentVersion: "0.1.1" }),
     checkUpdate: async () => ({ supported: true, status: "uptodate", currentVersion: "0.1.1" }),
+    downloadUpdate: async () => true,
+    skipUpdateVersion: async (version) => ({ supported: true, status: "available", version, notice: "silent" }),
     installUpdate: async () => true,
     onEvent: (fn) => { listener = fn; }
   }
@@ -288,6 +291,44 @@ check("an update failure is reported as a toast rather than swallowed",
 fire({ type: "update", supported: false, status: "idle" });
 check("a build with no updater shows no update row", updateRow.hidden === true);
 check("the install action is gone once there is nothing to install", document.getElementById("installUpdate").hidden === true);
+
+/* ---------- an automatic check asks instead of downloading ---------- */
+const toastsBeforePrompt = document.getElementById("toasts").children.length;
+const logLinesBeforePrompt = log.children.length;
+fire({ type: "update", supported: true, status: "available", version: "0.1.3", notice: "prompt" });
+check("an automatically found update asks with buttons instead of downloading",
+  document.getElementById("updatePromptRow").hidden === false &&
+  document.getElementById("updatePromptText").textContent.includes("0.1.3") &&
+  document.getElementById("updateText").textContent === "" &&
+  document.getElementById("downloadUpdate").hidden === false &&
+  document.getElementById("skipUpdate").hidden === false &&
+  document.getElementById("laterUpdate").hidden === false,
+  document.getElementById("updatePromptText").textContent);
+check("the ask is neither a log line nor a toast",
+  log.children.length === logLinesBeforePrompt && document.getElementById("toasts").children.length === toastsBeforePrompt,
+  `log=${log.children.length}`);
+
+await document.getElementById("downloadUpdate").onclick();
+check("accepting the ask hides it and hands over to the download flow",
+  document.getElementById("updatePromptRow").hidden === true);
+
+fire({ type: "update", supported: true, status: "available", version: "0.1.3", notice: "prompt" });
+fire({ type: "update", supported: true, status: "uptodate", currentVersion: "0.1.1", notice: "silent" });
+check("a silent background result clears the ask and says nothing anywhere",
+  document.getElementById("updatePromptRow").hidden === true &&
+  document.getElementById("toasts").children.length === toastsBeforePrompt &&
+  log.children.length === logLinesBeforePrompt,
+  `toasts=${document.getElementById("toasts").children.length} log=${log.children.length}`);
+
+fire({ type: "update", supported: true, status: "available", version: "0.1.3", notice: "prompt" });
+await document.getElementById("skipUpdate").onclick();
+check("skipping hides the ask", document.getElementById("updatePromptRow").hidden === true);
+fire({ type: "update", supported: true, status: "downloading", version: "0.1.3", percent: 10 });
+check("a download tick does not resurrect the ask", document.getElementById("updatePromptRow").hidden === true);
+
+fire({ type: "update", supported: true, status: "available", version: "0.1.3", notice: "prompt" });
+document.getElementById("laterUpdate").onclick();
+check("later just closes the ask", document.getElementById("updatePromptRow").hidden === true);
 
 rmSync(scriptPath, { force: true });
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

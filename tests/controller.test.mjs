@@ -258,10 +258,13 @@ const fs = await import("node:fs/promises");
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hextech-settings-"));
 const writeSettings = (value) => fs.writeFile(path.join(dir, "settings.json"), JSON.stringify(value), "utf8");
 
-await writeSettings({ minPlayers: 5, stallTimeoutMs: 180_000 });
+await writeSettings({ minPlayers: 5, stallTimeoutMs: 180_000, skippedUpdateVersion: "0.1.5" });
 const legacy = SettingsStore.at(dir);
 await legacy.load();
 check("a stored 180s stall timeout (the old default) moves to the new one", legacy.settings.stallTimeoutMs === 30_000, String(legacy.settings.stallTimeoutMs));
+check("a skipped update version survives the settings round-trip", legacy.settings.skippedUpdateVersion === "0.1.5", String(legacy.settings.skippedUpdateVersion));
+await legacy.update({ minPlayers: 4 });
+check("a settings save keeps the skipped update version", legacy.settings.skippedUpdateVersion === "0.1.5", String(legacy.settings.skippedUpdateVersion));
 
 await writeSettings({ stallTimeoutMs: 120_000 });
 const chosen = SettingsStore.at(dir);
