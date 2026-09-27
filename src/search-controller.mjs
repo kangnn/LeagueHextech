@@ -106,6 +106,10 @@ export class SearchController {
     // A party whose invitation list is already full refuses browser joins outright
     // (HTTP 400 / PARTY_INVITE_LIMIT), so it is set aside for far longer than a merely stale room.
     inviteLimitCooldownMs = 600_000,
+    // The watch loop (holding a joined room) never polls faster than this, even when the browser
+    // poll interval is small: every watch rule works on seconds, so a faster tick is pure load.
+    // 0 disables the floor - the tests drive time with 10ms intervals.
+    watchIntervalFloorMs = 1_000,
     // Pacing inside one sweep, so a long list of plausible rooms cannot flood the client.
     attemptGapMs = 500,
     maxAttemptsPerSweep = 20,
@@ -122,6 +126,7 @@ export class SearchController {
     this.exhaustedCooldownMs = exhaustedCooldownMs;
     this.stallTimeoutMs = stallTimeoutMs;
     this.inviteLimitCooldownMs = inviteLimitCooldownMs;
+    this.watchIntervalFloorMs = watchIntervalFloorMs;
     this.attemptGapMs = attemptGapMs;
     this.maxAttemptsPerSweep = maxAttemptsPerSweep;
     this.clock = clock;
@@ -314,7 +319,9 @@ export class SearchController {
     for (const [id, record] of this.#exhaustedRooms) {
       if (this.clock() >= record.expiresAt) this.#exhaustedRooms.delete(id);
     }
-    await this.#maybeRefresh(signal, { force: true });
+    // Fire and forget, for the same reason as in `#cycle`: the client's rescan and the backoff
+    // sleep now overlap instead of adding up before the next sweep.
+    void this.#maybeRefresh(signal, { force: true });
     if (this.#stale(signal)) return;
     this.#delayMs = this.#sweepDelayMs;
     this.#sweepDelayMs = Math.min(this.#sweepDelayMs * 2, this.maxSweepIntervalMs);
@@ -348,8 +355,11 @@ export class SearchController {
     if (this.#stale(signal)) return;
     try {
       this.#transition(STATES.searching);
-      // Ask the client to re-scan its browser instead of serving a stale cache.
-      await this.#maybeRefresh(signal);
+      // Ask the client to re-scan its browser, but do not wait for it: the refresh POST can take
+      // seconds (5s was observed on a busy client), and serialising it in front of every list fetch
+      // slowed the whole search loop by exactly that much every cycle. The rescan lands in time for
+      // the next cycle's list read.
+      void this.#maybeRefresh(signal);
       const lobbies = await this.provider.listLobbies({ signal });
       // The client answered, so whatever failed before is over. Without this a single stalled request
       // left "最近错误" showing for the rest of the session even though the search had recovered.
@@ -650,12 +660,21 @@ export class SearchController {
     });
   }
 
+  /**
+   * Watching a joined room needs ~1s granularity, not the user's poll cadence: it halves the request
+   * rate while a room is being held without delaying any decision the watch actually makes, since
+   * every watch rule (invite budget, stall timeout) works on seconds anyway.
+   */
+  #watchIntervalMs() {
+    return Math.max(this.intervalMs, this.watchIntervalFloorMs);
+  }
+
   #scheduleWatch(signal) {
     if (this.#stale(signal) || !this.#watchJoined) return;
     clearTimeout(this.#timer);
     this.#timer = setTimeout(() => {
       this.#watch(signal).catch((error) => this.#watchFailure(signal, error));
-    }, this.#watchDelayMs || this.intervalMs);
+    }, this.#watchDelayMs || this.#watchIntervalMs());
   }
 
   /** A failure while watching a joined room: retried, unless the client session itself is gone. */
@@ -670,7 +689,7 @@ export class SearchController {
     // A failing watch must not retry at the poll cadence. Leaving a room that keeps timing out would
     // otherwise fire a DELETE every interval - at a 500ms poll that is two futile writes a second aimed
     // at a client that is already not answering.
-    this.#watchDelayMs = Math.min(Math.max(this.#watchDelayMs || this.intervalMs, this.intervalMs) * 2, this.maxIntervalMs);
+    this.#watchDelayMs = Math.min(Math.max(this.#watchDelayMs || this.#watchIntervalMs(), this.intervalMs) * 2, this.maxIntervalMs);
     this.#emit({ type: "error", message: this.#lastError, retryInMs: this.#watchDelayMs });
     return this.#scheduleWatch(signal);
   }

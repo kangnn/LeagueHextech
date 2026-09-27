@@ -53,8 +53,16 @@ export function candidateInstallRoots(env = process.env) {
   return uniq(roots);
 }
 
-/** Discovered by scanning the usual install parents for folders such as `英雄联盟(26)`. */
+/**
+ * Discovered by scanning the usual install parents for folders such as `英雄联盟(26)`.
+ *
+ * The scan reads four directory listings, and install locations do not change while the app runs,
+ * so the result is cached for the session. `env` shapes the parents list, which only varies between
+ * processes in practice - the tests import the module fresh per run.
+ */
+let scannedRootsCache;
 async function scannedInstallRoots(env = process.env) {
+  if (scannedRootsCache) return scannedRootsCache;
   const parents = [
     env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
     env.ProgramFiles ?? "C:\\Program Files",
@@ -73,6 +81,7 @@ async function scannedInstallRoots(env = process.env) {
       /* Missing or unreadable parent is expected on most machines. */
     }
   }
+  scannedRootsCache = roots;
   return roots;
 }
 
@@ -93,13 +102,10 @@ async function readLockfileAt(filePath) {
 
 /** Live PIDs without WMI, so it also works on anti-cheat hardened clients. */
 export async function listClientPids() {
+  // tasklist starts in ~0.1s; PowerShell needs ~1s of cold start. tasklist answers the question on
+  // every machine, so it goes first and PowerShell stays only as a fallback for the rare case where
+  // tasklist itself fails.
   const readers = [
-    async () => {
-      const { stdout } = await execFileAsync("powershell.exe", [
-        "-NoProfile", "-Command", "(Get-Process -Name LeagueClientUx -ErrorAction SilentlyContinue).Id"
-      ], { windowsHide: true });
-      return String(stdout).split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line)).map(Number);
-    },
     async () => {
       // A tasklist CSV row is `"LeagueClientUx.exe","1234","Console","1","500,000 K"`: only the
       // second column is a PID, so the row is matched rather than scraping every number in it.
@@ -107,6 +113,12 @@ export async function listClientPids() {
         "/FI", `IMAGENAME eq ${UX_PROCESS_NAME}`, "/FO", "CSV", "/NH"
       ], { windowsHide: true });
       return [...String(stdout).matchAll(/"LeagueClientUx\.exe"\s*,\s*"(\d+)"/gi)].map((match) => Number(match[1]));
+    },
+    async () => {
+      const { stdout } = await execFileAsync("powershell.exe", [
+        "-NoProfile", "-Command", "(Get-Process -Name LeagueClientUx -ErrorAction SilentlyContinue).Id"
+      ], { windowsHide: true });
+      return String(stdout).split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line)).map(Number);
     }
   ];
   for (const read of readers) {
@@ -208,6 +220,14 @@ async function fromProcessCommandLine() {
  * builds keep `lockfile` empty under an exclusive anti-cheat lock), then the lockfile, then the
  * client process command line. Nothing is ever taken from a hand-typed value.
  */
+/**
+ * A successful discovery is remembered keyed by the process list that produced it: the same
+ * LeagueClientUx process always serves the same port and token, so the periodic client-status
+ * check can skip the log read and the command-line spawn entirely. A changed pid set (client
+ * restarted, or closed) recomputes from scratch, which is exactly when the old answer is invalid.
+ */
+let discoveryCache;
+
 export async function discoverLcuConnection({ env = process.env, listPids = listClientPids } = {}) {
   const attempts = [];
 
@@ -227,17 +247,26 @@ export async function discoverLcuConnection({ env = process.env, listPids = list
     throw error;
   }
 
+  const pidKey = pids.join(",");
+  if (discoveryCache?.pidKey === pidKey) return discoveryCache.value;
+
+  // Only a success is cached, so every early return below funnels through `finish`.
+  const finish = (result) => {
+    discoveryCache = { pidKey, value: result };
+    return result;
+  };
+
   const log = await fromClientLog(roots, pids);
-  if (log) return log;
+  if (log) return finish(log);
   attempts.push("客户端日志中未找到可用的连接参数");
 
   const lockfile = await fromLockfile(roots, env);
-  if (lockfile) return lockfile;
+  if (lockfile) return finish(lockfile);
   attempts.push("lockfile 不存在、为空或被反作弊独占锁定");
 
   // Reading a process command line costs a shell spawn; a client process is known to exist here.
   const commandLine = await fromProcessCommandLine();
-  if (commandLine) return commandLine;
+  if (commandLine) return finish(commandLine);
   attempts.push("无法读取客户端进程命令行（WMI 被拒绝或需要管理员权限）");
 
   // Reaching here means a client process exists but none of the three sources yielded parameters -

@@ -109,7 +109,7 @@ await provider.joinLobby("p2").then(() => check("join rejection carries an error
 const events = [];
 const controller = new SearchController(provider, {
   policy, emit: (event) => events.push(event),
-  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0, exhaustedCooldownMs: 60_000, inviteLimitCooldownMs: 60_000, stallTimeoutMs: 400
 });
 
@@ -183,7 +183,7 @@ function floorHarness({ stallTimeoutMs, players, invites = 1, floor = 5, inRoom 
     policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: floor, maxInvites: 50, modePolicy: "attempt" },
     stallTimeoutMs,
     emit: (event) => events.push(event),
-    intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+    intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
     attemptGapMs: 0, refreshThrottleMs: 0, exhaustedCooldownMs: 60_000, inviteLimitCooldownMs: 60_000
   });
   return { controller, provider, events };
@@ -290,7 +290,7 @@ const readController = new SearchController(readProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 4 },
   stallTimeoutMs: 30_000,
   emit: () => {},
-  intervalMs: 20, maxIntervalMs: 20, sweepIntervalMs: 20, maxSweepIntervalMs: 20,
+  intervalMs: 20, maxIntervalMs: 20, sweepIntervalMs: 20, maxSweepIntervalMs: 20, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0
 });
 await readController.start();
@@ -317,7 +317,7 @@ const churnController = new SearchController(churnProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 4, maxInvites: 50, modePolicy: "attempt" },
   stallTimeoutMs: 30_000,
   emit: (event) => churnEvents.push(event),
-  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0, exhaustedCooldownMs: 60_000, inviteLimitCooldownMs: 600_000
 });
 await churnController.start();
@@ -330,12 +330,15 @@ check("the rejection is explained as an invite-budget failure",
 check("the dead room is not joined again while the browser still reports it unchanged",
   churn.joins === 1, `joins=${churn.joins}`);
 
-/* ---------- idle connections are not pooled ---------- */
-// The LCU closes idle sockets on its own schedule; reusing one that it already closed is what produced
-// sporadic timeouts on reads and writes alike.
+/* ---------- the LCU agent pools connections, with the dying-socket race handled ---------- */
+// Reuse is the cheapest way to keep a per-few-hundred-ms request load off the client; the old
+// "reuse swallows a request until timeout" hazard is handled instead of avoided: idle sockets are
+// dropped quickly, and a GET that still lands on a server-closed socket is retried once.
 const fetchSource = await fs.readFile(new URL(root + "lcu-fetch.mjs"), "utf8");
-check("the LCU agent does not keep connections alive", /keepAlive: false/.test(fetchSource));
-check("no stale keep-alive setting is left behind", !/keepAlive: true/.test(fetchSource));
+check("the LCU agent pools connections and drops idle ones before the client does",
+  /keepAlive: true/.test(fetchSource) && /timeout: 10_000/.test(fetchSource));
+check("a GET on a reused socket the server closed is retried once",
+  /reusedSocket/.test(fetchSource) && /ECONNRESET/.test(fetchSource));
 
 /* ---------- a failing watch backs off instead of hammering the client ---------- */
 let reads = 0;
@@ -358,7 +361,7 @@ const flakyController = new SearchController(flakyProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 4, maxInvites: 50 },
   stallTimeoutMs: 30_000,
   emit: (event) => flakyEvents.push(event),
-  intervalMs: 10, maxIntervalMs: 400, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  intervalMs: 10, maxIntervalMs: 400, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0
 });
 await flakyController.start();
@@ -390,7 +393,7 @@ const leaveController = new SearchController(leaveProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 4, maxInvites: 50 },
   stallTimeoutMs: 30_000,
   emit: (event) => leaveEvents.push(event),
-  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0
 });
 await leaveController.start();
@@ -421,7 +424,7 @@ const mixedController = new SearchController(mixedProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 5, maxInvites: 50 },
   stallTimeoutMs: 30_000,
   emit: () => {},
-  intervalMs: 20, maxIntervalMs: 20, sweepIntervalMs: 20, maxSweepIntervalMs: 20,
+  intervalMs: 20, maxIntervalMs: 20, sweepIntervalMs: 20, maxSweepIntervalMs: 20, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0
 });
 await mixedController.start();
