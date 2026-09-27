@@ -73,7 +73,7 @@ const IDS = [
   "stallTimeoutSec", "nameKeywords", "save", "settingsNow",
   "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors",
   "toasts", "topVersion",
-  "themeBtn", "themeMenu", "tbIcon",
+  "themeBtn", "themeMenu",
   "accentSwatches", "accentCustom", "winMin", "winMax", "winClose"
 ];
 const byId = new Map(IDS.map((id) => [id, new El("div")]));

@@ -200,7 +200,13 @@
 </head>
 <body>
 <header class="titlebar">
-  <img class="tb-icon" id="tbIcon" alt="" hidden>
+  <!-- The mark from scripts/make-tray-icon.mjs redrawn as SVG: the renderer on some machines fails to
+       decode <img> PNGs entirely, and a vector needs no image decoder at all. -->
+  <svg class="tb-icon" viewBox="0 0 32 32" width="16" height="16" aria-hidden="true">
+    <!-- 六边形环（evenodd 挖空）+ 金色核心，同 scripts/make-tray-icon.mjs 的构图 -->
+    <path fill="var(--accent)" fill-rule="evenodd" d="M28.79 23.39 16 30.77 3.21 23.39 3.21 8.61 16 1.23 28.79 8.61ZM24.2 20.74 16 25.47 7.8 20.74 7.8 11.26 16 6.53 24.2 11.26Z"/>
+    <path fill="var(--gold)" d="M20.2 18.43 16 20.85 11.8 18.43 11.8 13.58 16 11.15 20.2 13.58Z"/>
+  </svg>
   <span class="tb-title">LeagueHextech</span>
   <span class="tb-spacer"></span>
   <span class="tb-version" id="topVersion"></span>
@@ -288,21 +294,6 @@
 </div>
 
 <script type="module">
-// The titlebar shows the same generated mark the tray and taskbar use; the data URL comes over IPC.
-// A startup race (renderer up before the handler is registered) retries instead of leaving a broken
-// image in the titlebar.
-async function loadTitlebarIcon(attempt = 0) {
-  try {
-    const src = await window.searcher.appIcon();
-    const img = document.getElementById("tbIcon");
-    img.src = src;
-    img.hidden = false;
-  } catch {
-    if (attempt < 10) setTimeout(() => loadTitlebarIcon(attempt + 1), 400);
-  }
-}
-loadTitlebarIcon();
-
 // Short labels: they are used both as the big state line and as the badge on each log line, so every
 // word here is paid for twice.
 const LABELS = {

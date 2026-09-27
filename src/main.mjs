@@ -364,7 +364,6 @@ function start() {
     ipcMain.handle("win:minimize", () => window?.minimize());
     ipcMain.handle("win:maximize", () => (window?.isMaximized() ? window?.unmaximize() : window?.maximize()));
     ipcMain.handle("win:close", () => window?.close());
-    ipcMain.handle("app:icon", () => `data:image/png;base64,${TRAY_ICON_32}`);
 
     createWindow();
 
