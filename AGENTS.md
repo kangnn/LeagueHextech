@@ -13,10 +13,11 @@
 - dev 预发布只保留最新 **3 个**（每个约 130 MB，CI 自动裁剪）。
 - 功能验证没问题后，把 dev **merge 回 `master`**。master 的普通推送同样只发 dev 预发布；
   要发稳定版：
-  1. 升 `package.json` 版本号（如 `npm version 0.1.4 --no-git-tag-version`）；
+  1. 升 `package.json` 版本号（如 `npm version 0.1.5 --no-git-tag-version`）；
   2. `CHANGELOG.md` 的「未发布」小节改为对应版本号；
   3. 在 master 上打 **`v*` 标签**（必须与 package.json 版本一致，否则构建直接失败）并推送标签，
-     CI 会构建安装包并发布带 `latest.yml` 的稳定 Release。
+     CI 会构建安装包并发布带 `latest.yml` 的稳定 Release；
+  4. **顺手同步 Gitee**（见下节）。
 
 ## 推送方式：git push 被代理阻断，走 API
 
@@ -29,6 +30,19 @@
 - **推完后本地分支不会自动前进**：用 API 元数据（tree / 父提交 / 消息 / 时间戳，时区 **+0800**）
   `git commit-tree` 重建同 sha 提交对象，再 `git update-ref` 对齐 `master` 与 `origin/master`。
 - 新建远端分支：`POST /repos/kangnn/LeagueHextech/git/refs`（脚本只支持更新已存在的 ref）。
+
+## Gitee 镜像：发版顺手推
+
+国内用户克隆/看代码走 Gitee：https://gitee.com/AppleSonoma/LeagueHextech，远程名 **`gitee`**。
+
+- **时机**：每次在 GitHub 发稳定版（master 推送 + `v*` 标签）成功后顺手同步一次：
+  `git push gitee master` 和 `git push gitee v<版本号>`。dev 不推（预发布太频繁，无意义）。
+- **凭据**：存 Windows 凭据管理器（host `gitee.com`，用户 `AppleSonoma`，Gitee 私人令牌作密码，
+  令牌需勾 `projects` 权限）。没有凭据时 `git credential fill` 直接失败，先去
+  gitee.com → 设置 → 私人令牌 生成，再存入凭据管理器。
+- **只做镜像**：不要在 Gitee 网页上提交，否则镜像会出现分叉；同步永远以 GitHub master 为准。
+- 经代理到 gitee.com 的 git 读写协议可用（GitHub 才被掐 git-receive-pack），直接 `git push` 即可，
+  不需要走 publish-via-api.mjs。
 
 ## 提交前验证
 
@@ -44,3 +58,4 @@
 - LCU 接口与 DTO 文档（社区维护的完整 schema）：https://www.mingweisamuel.com/lcu-schema/
   （本机国服客户端不暴露 swagger，查字段名以该文档 + 真实报文为准。）
 - GitHub 上仓库：https://github.com/kangnn/LeagueHextech
+- Gitee 镜像：https://gitee.com/AppleSonoma/LeagueHextech
