@@ -9,7 +9,7 @@ import path from "node:path";
  */
 
 // 发布后的统计服务地址（WorkBuddy 站点托管）。
-const STATS_ENDPOINT = "https://lh-hextech-stats.example/stats-api-placeholder";
+const STATS_ENDPOINT = "https://lh-hextech-stats.app.workbuddy.host/api";
 
 const REQUEST_TIMEOUT_MS = 8_000;
 
