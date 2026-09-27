@@ -208,14 +208,24 @@ async function fromProcessCommandLine() {
  * builds keep `lockfile` empty under an exclusive anti-cheat lock), then the lockfile, then the
  * client process command line. Nothing is ever taken from a hand-typed value.
  */
-export async function discoverLcuConnection({ env = process.env } = {}) {
+export async function discoverLcuConnection({ env = process.env, listPids = listClientPids } = {}) {
   const attempts = [];
 
   const roots = await resolveInstallRoots(env);
   attempts.push(`安装目录候选：${roots.length ? roots.join("；") : "未找到"}`);
 
-  const pids = await listClientPids();
+  const pids = await listPids();
   attempts.push(pids.length ? `检测到客户端进程 PID：${pids.join(", ")}` : "未检测到 LeagueClientUx.exe 进程");
+
+  // LeagueAkari 的判定基准是活进程：没有任何 LeagueClientUx.exe 在跑时，残留的客户端日志和
+  // lockfile 一律不可信——上一次会话的端口和令牌会让状态指示器谎报"已连接"。
+  if (pids.length === 0) {
+    const error = new Error(`未检测到已登录的 League Client；请启动客户端后重试。${attempts.join("；")}`);
+    error.fatal = true;
+    error.attempts = attempts;
+    error.hasClient = false;
+    throw error;
+  }
 
   const log = await fromClientLog(roots, pids);
   if (log) return log;
@@ -225,23 +235,16 @@ export async function discoverLcuConnection({ env = process.env } = {}) {
   if (lockfile) return lockfile;
   attempts.push("lockfile 不存在、为空或被反作弊独占锁定");
 
-  // Reading a process command line costs a shell spawn and there is nothing to read when no client
-  // process exists, so the idle connection check stays cheap by skipping it in that case.
-  if (pids.length > 0) {
-    const commandLine = await fromProcessCommandLine();
-    if (commandLine) return commandLine;
-  }
+  // Reading a process command line costs a shell spawn; a client process is known to exist here.
+  const commandLine = await fromProcessCommandLine();
+  if (commandLine) return commandLine;
   attempts.push("无法读取客户端进程命令行（WMI 被拒绝或需要管理员权限）");
 
-  const error = new Error(
-    pids.length
-      ? `已检测到 League Client 但无法获取连接参数。${attempts.join("；")}`
-      : `未检测到已登录的 League Client；请启动客户端后重试。${attempts.join("；")}`
-  );
+  // Reaching here means a client process exists but none of the three sources yielded parameters -
+  // a different problem from "no client at all", with a different fix (permissions, admin rights).
+  const error = new Error(`已检测到 League Client 但无法获取连接参数。${attempts.join("；")}`);
   error.fatal = true;
   error.attempts = attempts;
-  // Reported separately so the UI can tell "no client at all" apart from "client running but its
-  // parameters could not be read" - two different problems with two different fixes.
-  error.hasClient = pids.length > 0;
+  error.hasClient = true;
   throw error;
 }

@@ -861,8 +861,9 @@ window.searcher.onEvent((event) => {
   countEvent(event);
   if (event.type === "update") {
     renderUpdate(event);
-    // Download progress ticks constantly, so only the states worth remembering reach the log.
-    if (event.status !== "downloading") append(event);
+    // "checking" and download ticks are transient; only an outcome (a new version, up to date,
+    // an error) is worth a log line. Logging the start is what made one check show up twice.
+    if (event.status !== "downloading" && event.status !== "checking") append(event);
     return;
   }
   if (event.type === "client-status") {

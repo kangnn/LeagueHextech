@@ -141,6 +141,28 @@ function createTray() {
 let updater;
 let updateState = { supported: false, status: "idle" };
 
+// electron-updater reports one network failure several times over (its internal retry stages each
+// log, and the error event repeats it), so identical messages inside a window are collapsed to one
+// log line. Network errors also get a plain-language version instead of a Chromium error code.
+const UPDATE_PROBLEM_WINDOW_MS = 10 * 60 * 1000;
+let lastUpdateProblem = { text: "", at: 0 };
+
+function describeUpdateProblem(raw) {
+  const text = String(raw).split("\n")[0];
+  // No "检查更新失败" prefix here - the renderer's own summary/toast wording adds one.
+  if (/net::ERR_CONNECTION_RESET/i.test(text)) return "连接被重置，暂时无法访问更新服务器（网络或代理问题，不影响使用）";
+  if (/net::ERR_(INTERNET_DISCONNECTED|NETWORK_CHANGED|CONNECTION_(TIMED_OUT|REFUSED)|NAME_NOT_RESOLVED|TIMED_OUT|ACCESS_DENIED)/i.test(text)) return "暂时无法访问更新服务器（网络或代理问题，不影响使用）";
+  return text;
+}
+
+function publishUpdateProblem(kind, raw) {
+  const text = describeUpdateProblem(raw);
+  const now = Date.now();
+  if (text === lastUpdateProblem.text && now - lastUpdateProblem.at < UPDATE_PROBLEM_WINDOW_MS) return;
+  lastUpdateProblem = { text, at: now };
+  publish({ type: kind, message: `更新：${text}` });
+}
+
 function setUpdateState(next) {
   updateState = { ...updateState, ...next };
   publish({ type: "update", ...updateState });
@@ -173,8 +195,8 @@ async function setUpdates() {
   updater.logger = {
     info: () => {},
     debug: () => {},
-    warn: (message) => publish({ type: "warning", message: `更新：${message}` }),
-    error: (message) => publish({ type: "error", message: `更新：${message}` })
+    warn: (message) => publishUpdateProblem("warning", message),
+    error: (message) => publishUpdateProblem("error", message)
   };
   updater.on("checking-for-update", () => setUpdateState({ status: "checking" }));
   updater.on("update-available", (info) => setUpdateState({ status: "available", version: info?.version }));
@@ -198,7 +220,7 @@ async function setUpdates() {
       publish({ type: "warning", message: "更新：无法增量下载，本次改为完整下载" });
       return;
     }
-    setUpdateState({ status: "error", message: text.split("\n")[0] });
+    setUpdateState({ status: "error", message: describeUpdateProblem(text) });
   });
   updateState = { ...updateState, supported: true };
   return updater;
@@ -212,7 +234,7 @@ async function checkForUpdates() {
   try {
     await updater.checkForUpdates();
   } catch (error) {
-    setUpdateState({ status: "error", message: String(error?.message ?? error) });
+    setUpdateState({ status: "error", message: describeUpdateProblem(String(error?.message ?? error)) });
   }
   return updateState;
 }
