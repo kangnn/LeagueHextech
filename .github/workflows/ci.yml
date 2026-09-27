@@ -15,8 +15,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Deliberately no install step: the suites drive the controller, the renderer script and the
-      # generated tray icon with nothing but Node built-ins, so CI stays fast and cannot fail on a
-      # dependency download.
+      # Deliberately no full install step (electron's download would dominate the run); but the
+      # websocket suite drives src/lcu-websocket.mjs, which imports the `ws` runtime dependency,
+      # so that one package has to be present before the suites can execute.
+      - name: Install ws (only runtime dependency the suites need)
+        run: npm install ws --no-save --no-audit --no-fund
       - name: Run the test suites
         run: npm test
