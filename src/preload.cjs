@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("searcher", {
   start: () => ipcRenderer.invoke("search:start"),
   stop: () => ipcRenderer.invoke("search:stop"),
   leave: () => ipcRenderer.invoke("search:leave"),
+  restart: () => ipcRenderer.invoke("search:restart"),
   status: () => ipcRenderer.invoke("search:status"),
   clientStatus: () => ipcRenderer.invoke("client:status"),
   diagnose: () => ipcRenderer.invoke("client:diagnose"),

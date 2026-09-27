@@ -366,6 +366,15 @@ function start() {
     });
     ipcMain.handle("search:stop", () => { controller.stop(); return controller.status(); });
     ipcMain.handle("search:leave", () => controller.leave());
+    // One click for "this room is fine but I don't want it": leave, then search again. Starting only
+    // after the leave actually reached idle - a failed leave leaves the room in place, and a new
+    // search would just adopt the very room the user asked to leave.
+    ipcMain.handle("search:restart", async () => {
+      const afterLeave = await controller.leave();
+      if (afterLeave.state !== "idle") return afterLeave;
+      await controller.start();
+      return controller.status();
+    });
     ipcMain.handle("client:status", () => clientStatus);
     ipcMain.handle("client:diagnose", async () => {
       const status = await refreshClientStatus();

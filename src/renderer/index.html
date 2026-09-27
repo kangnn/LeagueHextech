@@ -247,6 +247,7 @@
   <button id="start">开始搜索</button>
   <button id="stop" class="secondary" disabled>停止</button>
   <button id="leave" class="secondary" disabled>离开房间</button>
+  <button id="restart" class="secondary" disabled title="离开当前房间并立即重新搜索">继续搜索</button>
 </div>
 
 <div class="stats">
@@ -375,7 +376,7 @@ function renderUpdate(state) {
 
 const $ = (id) => document.getElementById(id);
 const state = $("state"), log = $("log"), logCount = $("logCount"), clearLogButton = $("clearLog");
-const startButton = $("start"), stopButton = $("stop"), leaveButton = $("leave");
+const startButton = $("start"), stopButton = $("stop"), leaveButton = $("leave"), restartButton = $("restart");
 const clientPill = $("client"), clientText = $("clientText");
 
 // A search runs for hours, so the log is a bounded buffer: appending forever would grow the DOM
@@ -502,6 +503,7 @@ function render(status) {
   startButton.disabled = Boolean(status.running) || status.state === "joined";
   stopButton.disabled = !status.running && status.state !== "joined";
   leaveButton.disabled = status.state !== "joined";
+  restartButton.disabled = status.state !== "joined";
 }
 
 function refreshLog() {
@@ -608,6 +610,9 @@ startButton.onclick = async () => {
 };
 stopButton.onclick = async () => render(await window.searcher.stop());
 leaveButton.onclick = async () => render(await window.searcher.leave());
+restartButton.onclick = async () => {
+  try { render(await window.searcher.restart()); } catch (error) { append({ type: "error", message: error.message }); }
+};
 
 $("diagnose").onclick = async () => {
   const result = await window.searcher.diagnose();

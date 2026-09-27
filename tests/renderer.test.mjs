@@ -66,7 +66,7 @@ class El {
 }
 
 const IDS = [
-  "state", "log", "logCount", "clearLog", "start", "stop", "leave", "diagnose", "checkUpdate",
+  "state", "log", "logCount", "clearLog", "start", "stop", "leave", "restart", "diagnose", "checkUpdate",
   "client", "clientText", "refreshed", "sweeps", "selectionRow", "selection",
   "errorRow", "error", "updateRow", "updateText", "installUpdate",
   "pollIntervalMs", "minPlayers", "maxInvites",
@@ -238,6 +238,12 @@ fire({ type: "stopped", state: "idle", running: false, selectedSummary: "房间 
 check("the current room row disappears when the search stops", document.getElementById("selectionRow").hidden === true);
 check("start is re-enabled and leave disabled when idle",
   document.getElementById("start").disabled === false && document.getElementById("leave").disabled === true);
+check("restart is disabled when idle too", document.getElementById("restart").disabled === true);
+
+// The whole point of the one-click restart: sitting in a room, both leave and restart are live.
+fire({ type: "joined", state: "joined", running: false, lobby: lobby("ccccdddd-1111-2222-3333-444455556666", 8, 3), message: "已在房间内" });
+check("in a room, restart is enabled alongside leave",
+  document.getElementById("restart").disabled === false && document.getElementById("leave").disabled === false);
 
 /* ---------- the update row ---------- */
 document.getElementById("clearLog").onclick();
