@@ -146,10 +146,19 @@ await sleep(600);
 check("a room that never grows is given up on", state.left === 2, `left=${state.left}`);
 check("stall leave is logged", events.some((e) => e.type === "left-stalled-room" && e.message.includes("停滞")), JSON.stringify(events.at(-1)?.message));
 
-state.rows = [row("p1", 1), row("p2", 1, "10钢禁长手莉莉娅")];
+state.rows = [row("p1", 1), row("p2", 1, "10钢禁长手莉莉娅"), row("p3", 2), row("p4", 2)];
+state.joinError.p3 = "INVALID_WHILE_PARTY_IN_ACTION";
+state.joinError.p4 = "PARTY_SIZE_LIMIT";
 await sleep(250);
 const inviteLimitSkips = events.filter((e) => e.type === "skipped" && e.message.includes("邀请名额已满")).length;
 check("invite-limit rooms are explained in plain language", inviteLimitSkips >= 1, `skips=${inviteLimitSkips}`);
+check("a client mid-transition says so instead of dumping the HTTP line",
+  events.some((e) => e.type === "skipped" && e.message.includes("客户端正忙")), JSON.stringify(events.filter((e) => e.type === "skipped").map((e) => e.message)));
+check("a party-size rejection is explained as a full room",
+  events.some((e) => e.type === "skipped" && e.message.includes("房间人数已满")), JSON.stringify(events.filter((e) => e.type === "skipped").map((e) => e.message)));
+const p4Attempts = state.joins.p4 ?? 0;
+await sleep(400);
+check("party-size rooms are parked, not retried every sweep", state.joins.p4 === p4Attempts, `attempts ${p4Attempts} -> ${state.joins.p4}`);
 const p2Attempts = state.joins.p2 ?? 0;
 await sleep(400);
 check("invite-limit rooms are parked, not retried every sweep", state.joins.p2 === p2Attempts, `attempts ${p2Attempts} -> ${state.joins.p2}`);
