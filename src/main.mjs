@@ -325,7 +325,14 @@ async function refreshClientStatus() {
       checkedAt: Date.now()
     };
     // A live client means a live socket: this also drives the event-driven watch and liveness.
-    ensureLcuSocket(connection);
+    // Socket setup must never break the status readout itself - when it could, one bad connection
+    // object left the indicator stuck on "未检测到客户端" even while a search was talking to the
+    // client just fine.
+    try {
+      ensureLcuSocket(connection);
+    } catch (error) {
+      publish({ type: "warning", message: `实时连接建立失败：${error?.message ?? error}` });
+    }
   } catch (error) {
     clientStatus = {
       connected: false,
@@ -414,11 +421,19 @@ function scheduleClientCheck() {
   clearTimeout(clientCheckTimer);
   const delay = clientStatus.connected ? CLIENT_CHECK_CONNECTED_MS : CLIENT_CHECK_DISCONNECTED_MS;
   clientCheckTimer = setTimeout(async () => {
-    // A live socket already proves the client is here; discovery would only burn process spawns.
-    if (window && !controller?.status().running && !lcuSocket?.isUp()) {
-      publish({ type: "client-status", ...(await refreshClientStatus()) });
+    // The reschedule is in a finally: a thrown check must not silently end the loop, or the
+    // indicator freezes on whatever it last showed.
+    try {
+      // A live socket already proves the client is here; discovery would only burn process spawns.
+      if (window && !controller?.status().running && !lcuSocket?.isUp()) {
+        publish({ type: "client-status", ...(await refreshClientStatus()) });
+      }
+    } catch (error) {
+      clientStatus = { connected: false, message: String(error?.message ?? error), checkedAt: Date.now() };
+      publish({ type: "client-status", ...clientStatus });
+    } finally {
+      scheduleClientCheck();
     }
-    scheduleClientCheck();
   }, delay);
   clientCheckTimer.unref?.();
 }

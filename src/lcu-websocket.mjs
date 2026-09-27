@@ -28,9 +28,15 @@ const RECONNECT_STEPS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
  * unverified loopback handshake at most once per session when the pin does not hold.
  */
 export function createLcuWebsocket({ port, token, onEvent = () => {}, onDown = () => {}, onUp = () => {} } = {}) {
-  if (!Number.isFinite(port) || typeof token !== "string" || token.length === 0) {
+  // Discovery reports the port as a string (parsed out of the lockfile or the client log), so the
+  // type is normalized here instead of pushing a cast onto every caller. A rejected constructor
+  // used to escape through refreshClientStatus and take the whole status readout down with it,
+  // which is why the coercion lives in the module rather than in the call sites.
+  const normalizedPort = Number(port);
+  if (!Number.isFinite(normalizedPort) || normalizedPort <= 0 || typeof token !== "string" || token.length === 0) {
     throw new Error(`无效的 LCU 连接参数（port=${port}）`);
   }
+  port = normalizedPort;
 
   let socket;
   let stopped = true;

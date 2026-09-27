@@ -14,7 +14,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node tests/controller.test.mjs && node tests/renderer.test.mjs && node tests/tray.test.mjs && node tests/discovery.test.mjs",
+    "test": "node tests/controller.test.mjs && node tests/renderer.test.mjs && node tests/tray.test.mjs && node tests/discovery.test.mjs && node tests/websocket.test.mjs",
     "test:controller": "node tests/controller.test.mjs",
     "test:renderer": "node tests/renderer.test.mjs",
     "test:tray": "node tests/tray.test.mjs",
