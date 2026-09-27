@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_POLICY } from "./eligibility.mjs";
 import { createLcuFetch } from "./lcu-fetch.mjs";
 import { discoverLcuConnection } from "./lcu-discovery.mjs";
-import { LcuCustomLobbyProvider } from "./lcu-provider.mjs";
+import { LcuCustomLobbyProvider, normalize } from "./lcu-provider.mjs";
+import { createLcuWebsocket } from "./lcu-websocket.mjs";
 import { SearchController } from "./search-controller.mjs";
 import { SettingsStore } from "./settings.mjs";
 import { resolveAutoUpdater } from "./updater-loader.mjs";
@@ -32,6 +33,10 @@ let settings;
 let lcuFetch;
 let clientCheckTimer;
 let clientStatus = { connected: false, checkedAt: undefined };
+// The live client socket and the connection (port:token) it was built from; rebuilt whenever
+// discovery reports a different client.
+let lcuSocket;
+let lcuSocketKey = "";
 // Set once the app is really on its way out; until then closing the window only hides it.
 let isQuitting = false;
 
@@ -319,6 +324,8 @@ async function refreshClientStatus() {
       detail: connection.detail,
       checkedAt: Date.now()
     };
+    // A live client means a live socket: this also drives the event-driven watch and liveness.
+    ensureLcuSocket(connection);
   } catch (error) {
     clientStatus = {
       connected: false,
@@ -332,11 +339,83 @@ async function refreshClientStatus() {
   return clientStatus;
 }
 
+/** The joined-lobby endpoints the watch loop consumes; every other push is ignored. */
+const LOBBY_PUSH_URIS = new Set(["/lol-lobby/v2/lobby", "/lol-lobby/v1/lobby"]);
+
+function handleLcuSocketEvent({ uri, eventType, data }) {
+  if (!LOBBY_PUSH_URIS.has(uri)) return;
+  if (eventType === "Delete" || data === null || data === undefined) {
+    // The room is gone (game started, or the user left): an empty push runs the room-gone path.
+    controller?.acceptLobbyPush(undefined);
+    return;
+  }
+  if (typeof data !== "object" || Array.isArray(data)) return;
+  try {
+    controller?.acceptLobbyPush(normalize(data));
+  } catch {
+    // A payload shape the normalizer does not know is dropped; the backstop fetch covers the gap.
+  }
+}
+
+/**
+ * Keeps one supervised WebSocket per discovered client. The socket's lifecycle *is* the liveness
+ * signal - it closes exactly when the client exits - so a healthy socket also lets the periodic
+ * discovery skip its work entirely. When discovery reports a different client (restart changes
+ * the port/token), the old session is replaced; its stop() must not be mistaken for a real
+ * disconnect, which is what the session-identity guard in `onDown` is for.
+ */
+function ensureLcuSocket(connection) {
+  const key = `${connection.port}:${connection.token}`;
+  if (lcuSocket && lcuSocketKey === key) return;
+  const stale = lcuSocket;
+  lcuSocket = undefined;
+  lcuSocketKey = "";
+  stale?.stop();
+
+  const session = createLcuWebsocket({
+    port: connection.port,
+    token: connection.token,
+    onEvent: handleLcuSocketEvent,
+    onUp() {
+      controller.watchPushConnected = true;
+      if (!clientStatus.connected) {
+        clientStatus = { ...clientStatus, connected: true, checkedAt: Date.now() };
+        publish({ type: "client-status", ...clientStatus });
+      }
+      refreshTray();
+    },
+    onDown() {
+      // A replaced session stopping itself is not a disconnect.
+      if (lcuSocket !== session) return;
+      controller.watchPushConnected = false;
+      if (clientStatus.connected) {
+        clientStatus = {
+          connected: false,
+          hasClient: true,
+          message: "与 League Client 的实时连接已断开（客户端可能已退出）",
+          checkedAt: Date.now()
+        };
+        publish({ type: "client-status", ...clientStatus });
+      }
+      // The cached connection parameters are now suspect; the next request must re-discover.
+      controller.provider.invalidate();
+      refreshTray();
+      // The pending check may be a 60s one (scheduled while connected); a restarted client should
+      // be found on the much shorter disconnected cadence instead.
+      scheduleClientCheck();
+    }
+  });
+  lcuSocket = session;
+  lcuSocketKey = key;
+  session.start();
+}
+
 function scheduleClientCheck() {
   clearTimeout(clientCheckTimer);
   const delay = clientStatus.connected ? CLIENT_CHECK_CONNECTED_MS : CLIENT_CHECK_DISCONNECTED_MS;
   clientCheckTimer = setTimeout(async () => {
-    if (window && !controller?.status().running) {
+    // A live socket already proves the client is here; discovery would only burn process spawns.
+    if (window && !controller?.status().running && !lcuSocket?.isUp()) {
       publish({ type: "client-status", ...(await refreshClientStatus()) });
     }
     scheduleClientCheck();
@@ -426,6 +505,7 @@ app.on("window-all-closed", () => {
   if (!isQuitting) return;
   clearTimeout(clientCheckTimer);
   controller?.stop();
+  lcuSocket?.stop();
   // Drops the pooled LCU sockets so nothing keeps the process alive after the window is gone.
   lcuFetch?.dispose?.();
   app.quit();

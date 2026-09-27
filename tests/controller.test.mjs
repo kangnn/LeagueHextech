@@ -406,6 +406,46 @@ check("the announcement precedes the result", leavingIndex >= 0 && leftIndex > l
 check("the leave reports how long the client took", Number(leaveEvents[leftIndex]?.elapsedMs) >= 50, String(leaveEvents[leftIndex]?.elapsedMs));
 leaveController.stop();
 
+/* ---------- WebSocket lobby pushes drive the watch ---------- */
+// A dedicated harness with a slow clock: the watch backstop is 1s away, so a push that reacts within
+// 100ms provably did not come from a fetch.
+function pushHarness() {
+  const events = [];
+  let lobby = normalize(joined("push-room", 3, 1));
+  let reads = 0;
+  const provider = {
+    async listLobbies() { return [normalize(row("push-room", 1))]; },
+    async refreshLobbyList() {},
+    async joinLobby() {},
+    async currentLobby() { reads += 1; return lobby; },
+    async leaveLobby() {}
+  };
+  const controller = new SearchController(provider, {
+    policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 5, maxInvites: 50, modePolicy: "attempt" },
+    emit: (event) => events.push(event),
+    intervalMs: 1_000, maxIntervalMs: 1_000, sweepIntervalMs: 1_000, maxSweepIntervalMs: 1_000,
+    watchIntervalFloorMs: 0, attemptGapMs: 0, refreshThrottleMs: 0, pushDebounceMs: 0, stallTimeoutMs: 60_000
+  });
+  return { controller, events, reads: () => reads, setLobby: (value) => { lobby = value; } };
+}
+
+const pushed = pushHarness();
+await pushed.controller.start();
+check("the push harness joined its room", pushed.controller.state === "joined", pushed.controller.state);
+
+const readsBeforePush = pushed.reads();
+pushed.controller.watchPushConnected = true;
+const consumedForReal = pushed.controller.acceptLobbyPush(normalize(joined("push-room", 5, 1)));
+check("a push is accepted while a room is watched", consumedForReal === true, String(consumedForReal));
+await sleep(80);
+check("the push updated the watch without a fetch", pushed.reads() === readsBeforePush, `reads ${readsBeforePush} -> ${pushed.reads()}`);
+check("the pushed change is announced", pushed.events.some((e) => e.type === "watching" && e.lobby?.playerCount === 5), JSON.stringify(pushed.events.find((e) => e.type === "watching")));
+
+const consumedGone = pushed.controller.acceptLobbyPush(undefined);
+await sleep(80);
+check("an empty push (room deleted) ends the watch", consumedGone === true && pushed.controller.state === "idle" && pushed.controller.status().running === false, `consumed=${consumedGone} state=${pushed.controller.state}`);
+check("a push is ignored once idle", pushed.controller.acceptLobbyPush(normalize(joined("push-room", 6, 1))) === false);
+
 /* ---------- the list count and the filtered count are different numbers ---------- */
 const mixedProvider = {
   async listLobbies() {
