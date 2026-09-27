@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("searcher", {
   start: () => ipcRenderer.invoke("search:start"),
   stop: () => ipcRenderer.invoke("search:stop"),
   leave: () => ipcRenderer.invoke("search:leave"),
+  restart: () => ipcRenderer.invoke("search:restart"),
   status: () => ipcRenderer.invoke("search:status"),
   clientStatus: () => ipcRenderer.invoke("client:status"),
   diagnose: () => ipcRenderer.invoke("client:diagnose"),
@@ -13,5 +14,8 @@ contextBridge.exposeInMainWorld("searcher", {
   updateStatus: () => ipcRenderer.invoke("updates:status"),
   checkUpdate: () => ipcRenderer.invoke("updates:check"),
   installUpdate: () => ipcRenderer.invoke("updates:install"),
+  winMinimize: () => ipcRenderer.invoke("win:minimize"),
+  winMaximize: () => ipcRenderer.invoke("win:maximize"),
+  winClose: () => ipcRenderer.invoke("win:close"),
   onEvent: (listener) => ipcRenderer.on("search:event", (_event, value) => listener(value))
 });

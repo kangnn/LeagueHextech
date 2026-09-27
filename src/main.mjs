@@ -141,6 +141,28 @@ function createTray() {
 let updater;
 let updateState = { supported: false, status: "idle" };
 
+// electron-updater reports one network failure several times over (its internal retry stages each
+// log, and the error event repeats it), so identical messages inside a window are collapsed to one
+// log line. Network errors also get a plain-language version instead of a Chromium error code.
+const UPDATE_PROBLEM_WINDOW_MS = 10 * 60 * 1000;
+let lastUpdateProblem = { text: "", at: 0 };
+
+function describeUpdateProblem(raw) {
+  const text = String(raw).split("\n")[0];
+  // No "检查更新失败" prefix here - the renderer's own summary/toast wording adds one.
+  if (/net::ERR_CONNECTION_RESET/i.test(text)) return "连接被重置，暂时无法访问更新服务器（网络或代理问题，不影响使用）";
+  if (/net::ERR_(INTERNET_DISCONNECTED|NETWORK_CHANGED|CONNECTION_(TIMED_OUT|REFUSED)|NAME_NOT_RESOLVED|TIMED_OUT|ACCESS_DENIED)/i.test(text)) return "暂时无法访问更新服务器（网络或代理问题，不影响使用）";
+  return text;
+}
+
+function publishUpdateProblem(kind, raw) {
+  const text = describeUpdateProblem(raw);
+  const now = Date.now();
+  if (text === lastUpdateProblem.text && now - lastUpdateProblem.at < UPDATE_PROBLEM_WINDOW_MS) return;
+  lastUpdateProblem = { text, at: now };
+  publish({ type: kind, message: `更新：${text}` });
+}
+
 function setUpdateState(next) {
   updateState = { ...updateState, ...next };
   publish({ type: "update", ...updateState });
@@ -164,6 +186,8 @@ async function setUpdates() {
   updater.autoDownload = true;
   // A user who simply closes the window still ends up current the next time the app starts.
   updater.autoInstallOnAppQuit = true;
+  // There is no web-installer flow here, and the updater nags about it unless told so.
+  updater.disableWebInstaller = true;
   // A dev build (version like `0.1.3-ci.g<sha>`) follows the dev channel: electron-updater then reads
   // the `ci.yml` of the newest prerelease. A stable install keeps the default and never sees one.
   if (app.getVersion().includes("-")) updater.allowPrerelease = true;
@@ -171,15 +195,33 @@ async function setUpdates() {
   updater.logger = {
     info: () => {},
     debug: () => {},
-    warn: (message) => publish({ type: "warning", message: `更新：${message}` }),
-    error: (message) => publish({ type: "error", message: `更新：${message}` })
+    warn: (message) => publishUpdateProblem("warning", message),
+    error: (message) => publishUpdateProblem("error", message)
   };
   updater.on("checking-for-update", () => setUpdateState({ status: "checking" }));
   updater.on("update-available", (info) => setUpdateState({ status: "available", version: info?.version }));
   updater.on("update-not-available", () => setUpdateState({ status: "uptodate", version: undefined, percent: undefined }));
   updater.on("download-progress", (progress) => setUpdateState({ status: "downloading", percent: Math.round(progress?.percent ?? 0) }));
   updater.on("update-downloaded", (info) => setUpdateState({ status: "ready", version: info?.version, percent: 100 }));
-  updater.on("error", (error) => setUpdateState({ status: "error", message: String(error?.message ?? error) }));
+  updater.on("error", (error) => {
+    const text = String(error?.message ?? error);
+    // electron-updater wraps errors and can carry the whole stack inside the message; the UI only
+    // needs the first line. And a dev channel that currently has nothing newer is the normal state,
+    // not a failure worth an alarm.
+    const code = error?.code ?? text.match(/ERR_UPDATER_[A-Z_]+/)?.[0];
+    if (code === "ERR_UPDATER_NO_PUBLISHED_VERSIONS") {
+      publish({ type: "warning", message: "更新：当前通道暂无可更新的版本" });
+      setUpdateState({ status: "uptodate" });
+      return;
+    }
+    // A differential download that falls back to a full download is the updater recovering on its own
+    // (usually the previous build shipped without a blockmap), not a failure - the download continues.
+    if (text.includes("fallback to full download")) {
+      publish({ type: "warning", message: "更新：无法增量下载，本次改为完整下载" });
+      return;
+    }
+    setUpdateState({ status: "error", message: describeUpdateProblem(text) });
+  });
   updateState = { ...updateState, supported: true };
   return updater;
 }
@@ -192,7 +234,7 @@ async function checkForUpdates() {
   try {
     await updater.checkForUpdates();
   } catch (error) {
-    setUpdateState({ status: "error", message: String(error?.message ?? error) });
+    setUpdateState({ status: "error", message: describeUpdateProblem(String(error?.message ?? error)) });
   }
   return updateState;
 }
@@ -217,8 +259,11 @@ function scheduleUpdateCheck() {
 function createWindow() {
   window = new BrowserWindow({
     width: 1080, height: 700, resizable: true, minWidth: 880, minHeight: 560,
-    title: "LeagueHextech · 海克斯乱斗房间搜索器",
-    backgroundColor: "#141416",
+    // The renderer draws its own titlebar (title, version, tool and window buttons), so the native
+    // one is hidden; the taskbar still shows `title`.
+    titleBarStyle: "hidden",
+    title: "LeagueHextech",
+    backgroundColor: "#101014",
     // Same drawing as the tray, so the window and taskbar stop showing the Electron logo.
     icon: createTrayImage(),
     webPreferences: { preload: path.join(here, "preload.cjs"), contextIsolation: true, nodeIntegration: false }
@@ -309,11 +354,11 @@ function start() {
     settings = SettingsStore.at(app.getPath("userData"));
     await settings.load();
     createController();
-    createWindow();
 
-    // Everything the window can ask for is registered before any optional feature runs. The 0.1.1 build
-    // registered these *after* the updater setup, so a single exception there left a window whose every
-    // button answered "No handler registered" - a nice-to-have must never be able to do that.
+    // Everything the window can ask for is registered *before the window exists*. The renderer starts
+    // firing IPC the moment it loads (the titlebar icon is fetched on module load), and the 0.1.1 build
+    // showed what a registration gap does: one exception there left a window whose every button
+    // answered "No handler registered" - a nice-to-have must never be able to do that.
     ipcMain.handle("search:status", () => controller.status());
     ipcMain.handle("search:start", async () => {
       await controller.start();
@@ -321,6 +366,15 @@ function start() {
     });
     ipcMain.handle("search:stop", () => { controller.stop(); return controller.status(); });
     ipcMain.handle("search:leave", () => controller.leave());
+    // One click for "this room is fine but I don't want it": leave, then search again. Starting only
+    // after the leave actually reached idle - a failed leave leaves the room in place, and a new
+    // search would just adopt the very room the user asked to leave.
+    ipcMain.handle("search:restart", async () => {
+      const afterLeave = await controller.leave();
+      if (afterLeave.state !== "idle") return afterLeave;
+      await controller.start();
+      return controller.status();
+    });
     ipcMain.handle("client:status", () => clientStatus);
     ipcMain.handle("client:diagnose", async () => {
       const status = await refreshClientStatus();
@@ -336,6 +390,13 @@ function start() {
     ipcMain.handle("updates:status", () => updateState);
     ipcMain.handle("updates:check", () => checkForUpdates());
     ipcMain.handle("updates:install", () => installUpdate());
+    // The renderer draws its own titlebar, so the window buttons live here. `close` still runs the
+    // close-to-tray handler instead of quitting.
+    ipcMain.handle("win:minimize", () => window?.minimize());
+    ipcMain.handle("win:maximize", () => (window?.isMaximized() ? window?.unmaximize() : window?.maximize()));
+    ipcMain.handle("win:close", () => window?.close());
+
+    createWindow();
 
     createTray();
     scheduleClientCheck();

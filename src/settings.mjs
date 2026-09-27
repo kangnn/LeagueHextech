@@ -18,7 +18,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // After joining: how long a room below the player floor may go without gaining a single player before
   // it is abandoned. 0 leaves such a room on the first check instead of waiting at all. Kept short: a
   // room that is not filling is not worth sitting in, and a long wait is indistinguishable from a stall.
-  stallTimeoutMs: 30_000
+  stallTimeoutMs: 30_000,
+  // Which full theme (token set) the renderer paints with; "custom" pairs with accentColor below.
+  themeId: "dark",
+  // Purely cosmetic: the accent colour the renderer paints its controls with.
+  accentColor: "#4cc2e0"
 });
 
 const LIMITS = Object.freeze({
@@ -57,6 +61,11 @@ export function sanitizeSettings(input) {
   settings.nameKeywords = source.nameKeywords === undefined
     ? [...DEFAULT_SETTINGS.nameKeywords]
     : sanitizeKeywords(source.nameKeywords);
+  settings.accentColor = /^#[0-9a-f]{6}$/i.test(source.accentColor ?? "")
+    ? source.accentColor.toLowerCase()
+    : DEFAULT_SETTINGS.accentColor;
+  settings.themeId = ["dark", "graphite", "cyber", "aurora", "mint", "butter", "sakura", "custom"]
+    .includes(source.themeId) ? source.themeId : DEFAULT_SETTINGS.themeId;
   return settings;
 }
 

@@ -1,9 +1,10 @@
 name: release
 
 # Two update channels:
-#   * every push to dev or master -> a dev prerelease (`ci-<sha>`) whose version is `<base>-ci.g<sha>`;
-#     it carries the installer, its blockmap and a `ci.yml` feed, so an installed dev build updates
-#     itself along dev commits (only the three newest dev prereleases are kept)
+#   * every push to dev or master -> a dev prerelease tagged `v<base>-ci.<run>.g<sha>` (semver-valid,
+#     which is what electron-updater requires to follow a channel); it carries the installer, its
+#     blockmap and a `ci.yml` feed, so an installed dev build updates itself along dev commits
+#     (only the three newest dev prereleases are kept)
 #   * every `v*` tag        -> a stable release carrying the installer, its blockmap, `latest.yml`,
 #     a `ci.yml` copy and the portable zip
 # `latest.yml` only ever lands on a stable release, so stable installs never see prereleases; a dev
@@ -61,14 +62,15 @@ jobs:
             throw "tag ${{ github.ref_name }} does not match package.json ($version)"
           }
 
-      # A dev build gets a version of its own: the sha makes every dev build distinct, and the `-ci.`
-      # prerelease tag puts it on the dev channel - an installed dev build looks for a `ci.yml` feed
-      # instead of the stable `latest.yml`.
+      # A dev build gets a version of its own: `-ci.` puts it on the dev channel, and the run number
+      # keeps successive dev builds strictly increasing (a sha alone is not monotonic under semver).
+      # electron-updater can only follow releases whose *tag* is valid semver with a matching
+      # prerelease, so the release tag is `v<version>` - a `ci-<sha>` tag is invisible to it.
       - name: Set the dev channel version
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         shell: bash
         run: |
-          version="$(node -p "require('./package.json').version.split('-')[0]")-ci.g${GITHUB_SHA::7}"
+          version="$(node -p "require('./package.json').version.split('-')[0]")-ci.${{ github.run_number }}.g${GITHUB_SHA::7}"
           node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$version';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
           echo "Dev version: $version"
 
@@ -141,7 +143,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $sha = "${{ github.sha }}".Substring(0, 7)
-          $tag = "ci-$sha"
+          # The tag must be semver-valid with the `-ci.` prerelease - electron-updater matches channel
+          # releases through the tag, so `ci-<sha>` tags would never be found by an installed dev build.
+          $tag = "v" + (node -p "require('./package.json').version")
           # electron-builder always writes latest.yml (regardless of a prerelease version), so the dev
           # channel feed is that same file under the channel name an installed dev build asks for.
           Copy-Item release/latest.yml release/ci.yml
@@ -159,8 +163,9 @@ jobs:
             --generate-notes
           "Published: https://github.com/${{ github.repository }}/releases/tag/$tag"
 
-      # Each build adds a ~130 MB asset, so old dev prereleases are trimmed down to three.
-      # Only `ci-*` tags are ever touched; stable `v*` releases are left alone. A failure here must not
+      # Each build adds a ~130 MB asset, so old dev prereleases are trimmed down to three. Both tag
+      # shapes are matched so the pre-`v<version>`-style prereleases get cleaned up too. Only dev
+      # prereleases are ever touched; stable `v*` releases are left alone. A failure here must not
       # fail the build.
       - name: Keep only the three newest dev prereleases
         shell: pwsh
@@ -169,7 +174,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $all = gh release list --limit 200 --json tagName,isPrerelease,createdAt | ConvertFrom-Json
-          $dev = $all | Where-Object { $_.isPrerelease -and $_.tagName -like 'ci-*' } |
+          $dev = $all | Where-Object { $_.isPrerelease -and ($_.tagName -like 'ci-*' -or $_.tagName -like 'v*-ci.*') } |
             Sort-Object createdAt -Descending
           if ($dev.Count -gt 3) {
             $dev | Select-Object -Skip 3 | ForEach-Object {

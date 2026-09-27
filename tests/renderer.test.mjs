@@ -35,6 +35,7 @@ class El {
     this.title = "";
     this.hidden = false;
     this.value = "";
+    this.style = {};
     this.parent = undefined;
     this._text = "";
   }
@@ -65,16 +66,20 @@ class El {
 }
 
 const IDS = [
-  "state", "log", "logCount", "clearLog", "start", "stop", "leave", "diagnose", "checkUpdate",
+  "state", "log", "logCount", "clearLog", "start", "stop", "leave", "restart", "diagnose", "checkUpdate",
   "client", "clientText", "refreshed", "sweeps", "selectionRow", "selection",
-  "errorRow", "error", "updateRow", "updateText", "installUpdate", "diagnostics",
+  "errorRow", "error", "updateRow", "updateText", "installUpdate",
   "pollIntervalMs", "minPlayers", "maxInvites",
   "stallTimeoutSec", "nameKeywords", "save", "settingsNow",
-  "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors"
+  "statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors",
+  "toasts", "topVersion",
+  "themeBtn", "themeMenu",
+  "accentSwatches", "accentCustom", "winMin", "winMax", "winClose"
 ];
 const byId = new Map(IDS.map((id) => [id, new El("div")]));
 const missingIds = [];
 const document = {
+  documentElement: { style: { setProperty: () => {} } },
   getElementById(id) {
     if (!byId.has(id)) { missingIds.push(id); byId.set(id, new El("div")); }
     return byId.get(id);
@@ -114,7 +119,7 @@ check("the event listener was registered", typeof listener === "function");
 const helpBadges = (html.match(/class="help"/g) ?? []).length;
 check("every setting carries a visible hover explanation", helpBadges === 5, String(helpBadges));
 check("each explanation actually has text",
-  (html.match(/class="help" title="[^"]{10,}"/g) ?? []).length === 5, String((html.match(/class="help" title="[^"]{10,}"/g) ?? []).length));
+  (html.match(/class="help" data-tip="[^"]{10,}"/g) ?? []).length === 5, String((html.match(/class="help" data-tip="[^"]{10,}"/g) ?? []).length));
 check("the mode choice is gone (the browser never reports a mode)",
   !/modePolicy/.test(html), "modePolicy still present");
 check("the subtitle line is gone", !/class="sub"/.test(html), "sub still present");
@@ -142,8 +147,17 @@ fire({ type: "joined", state: "joined", lobby: lobby("9ff01f04-f50f-4eb9-b0f1-46
 check("a success row is green-toned", log.children[0].dataset.tone === "ok");
 fire({ type: "error", state: "idle", message: "未检测到已登录的 League Client" });
 check("an error row is red-toned", log.children[0].dataset.tone === "bad");
-fire({ type: "skipped", state: "searching", lobby: lobby("2f92c643-767e-4d65-9e56-5db925ac8fcd", 1, undefined), message: "邀请名单已满，无法加入（PARTY_INVITE_LIMIT）" });
+fire({ type: "skipped", state: "searching", lobby: lobby("2f92c643-767e-4d65-9e56-5db925ac8fcd", 1, undefined), message: "邀请名额已满（上限 50），无法加入" });
 check("a skipped room is amber-toned", log.children[0].dataset.tone === "warn");
+
+// The raw LCU rejection carries the full UUID in the request path; the sentence shows the 8-character
+// form and keeps the untouched text one hover away.
+fire({ type: "skipped", state: "searching", lobby: lobby("2f92c643-767e-4d65-9e56-5db925ac8fcd", 1, undefined), message: "无法连接 League Client（POST /lol-lobby/v2/party/2f92c643-767e-4d65-9e56-5db925ac8fcd/join）：boom" });
+const rawSkipLine = log.children[0];
+const rawSkipMsg = rawSkipLine.querySelector(".msg");
+check("a UUID in the message is shortened to 8 characters",
+  rawSkipMsg?.textContent === "无法连接 League Client（POST /lol-lobby/v2/party/2f92c643/join）：boom", rawSkipMsg?.textContent);
+check("the full message stays available on hover", rawSkipMsg?.title?.includes("2f92c643-767e-4d65-9e56-5db925ac8fcd") === true, rawSkipMsg?.title);
 fire({ type: "left-stale-room", state: "searching", lobby: lobby("aaaabbbb-0000-0000-0000-000000000000", 3, 50), message: "邀请已达上限，人数仍为 3，已退出" });
 check("the invite count gets its own chip", log.children[0].querySelector(".invite")?.textContent === "邀请 50");
 
@@ -171,6 +185,11 @@ check("the oldest lines are dropped from the DOM", log.children.some((child) => 
 
 document.getElementById("clearLog").onclick();
 check("clear empties the panel", log.children.length === 0 && document.getElementById("logCount").textContent === "0 条", `${log.children.length} / ${document.getElementById("logCount").textContent}`);
+fire({ type: "joining", state: "joining", message: "尝试加入" });
+document.getElementById("clearLog").onclick();
+check("clearing the log zeroes the aggregate too",
+  ["statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors"].every((id) => document.getElementById(id).textContent === "0"),
+  ["statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors"].map((id) => document.getElementById(id).textContent).join("/"));
 
 /* ---------- status rendering ---------- */
 fire({ type: "client-status", connected: false, message: "未检测到已登录的 League Client", checkedAt: Date.now() });
@@ -195,8 +214,9 @@ check("the feed carries a running aggregate",
   [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/") === "2/1/1/1/1",
   [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/"));
 fire({ type: "connecting", state: "connecting" });
-check("starting a new search resets the aggregate",
-  [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/") === "0/0/0/0/0",
+fire({ type: "joining", state: "joining", message: "尝试加入" });
+check("a new search does not reset the aggregate - the panel keeps old lines, so the numbers must match it",
+  [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/") === "3/1/1/1/1",
   [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/"));
 
 fire({ type: "joined", state: "joined", running: true, lobby: lobby("ccccdddd-1111-2222-3333-444455556666", 8, 30), message: "已在房间内" });
@@ -228,6 +248,12 @@ fire({ type: "stopped", state: "idle", running: false, selectedSummary: "房间 
 check("the current room row disappears when the search stops", document.getElementById("selectionRow").hidden === true);
 check("start is re-enabled and leave disabled when idle",
   document.getElementById("start").disabled === false && document.getElementById("leave").disabled === true);
+check("restart is disabled when idle too", document.getElementById("restart").disabled === true);
+
+// The whole point of the one-click restart: sitting in a room, both leave and restart are live.
+fire({ type: "joined", state: "joined", running: false, lobby: lobby("ccccdddd-1111-2222-3333-444455556666", 8, 3), message: "已在房间内" });
+check("in a room, restart is enabled alongside leave",
+  document.getElementById("restart").disabled === false && document.getElementById("leave").disabled === false);
 
 /* ---------- the update row ---------- */
 document.getElementById("clearLog").onclick();
@@ -248,13 +274,16 @@ check("a ready update is logged as good news",
   log.children.length === 1 && log.children[0].dataset.tone === "ok", log.children[0]?.dataset.tone);
 
 fire({ type: "update", supported: true, status: "uptodate", currentVersion: "0.1.2" });
-check("a manual check that finds nothing says so",
-  document.getElementById("updateText").textContent.includes("已是最新版本"), document.getElementById("updateText").textContent);
+check("a manual check that finds nothing pops a transient toast",
+  document.getElementById("updateRow").hidden === true &&
+  document.getElementById("toasts").children[0]?.textContent.includes("已是最新版本"),
+  document.getElementById("toasts").children[0]?.textContent);
 
 fire({ type: "update", supported: true, status: "error", message: "网络不可达" });
-check("an update failure is reported rather than swallowed",
-  document.getElementById("updateText").textContent.includes("网络不可达") && log.children[0].dataset.tone === "bad",
-  document.getElementById("updateText").textContent);
+check("an update failure is reported as a toast rather than swallowed",
+  document.getElementById("toasts").children[1]?.className.includes("bad") &&
+  document.getElementById("toasts").children[1]?.textContent.includes("网络不可达"),
+  document.getElementById("toasts").children[1]?.textContent);
 
 fire({ type: "update", supported: false, status: "idle" });
 check("a build with no updater shows no update row", updateRow.hidden === true);

@@ -4,8 +4,10 @@
 
 ## 分支模型：dev 开发，master 发布
 
-- 日常开发在 **`dev` 分支**进行，推送即触发 CI 构建并发 **dev 预发布**（tag `ci-<sha>`，
-  版本号在 CI 里被改写为 `<base>-ci.g<sha>`）。
+- 日常开发在 **`dev` 分支**进行，推送即触发 CI 构建并发 **dev 预发布**：tag 为
+  `v<base>-ci.<构建号>.g<sha>`，版本号在 CI 里被改写为 `<base>-ci.<构建号>.g<sha>`。
+  tag 必须是合法 semver 且预发布段匹配通道——electron-updater 按 tag 的 semver 通道匹配
+  release，`ci-<sha>` 这类 tag 它永远找不到；构建号保证版本严格递增，不要改回只用 sha。
 - 装了 dev 版（版本号带 `-ci.`）的应用会通过 `ci.yml` 通道**自动跟随 dev 提交更新**；
   装稳定版的只读 `latest.yml`，永远看不到预发布。两条通道互不干扰。
 - dev 预发布只保留最新 **3 个**（每个约 130 MB，CI 自动裁剪）。

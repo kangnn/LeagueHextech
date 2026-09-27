@@ -414,18 +414,32 @@ export class SearchController {
           if (error?.skip) {
             // A full, locked or revoked room is not retried until the next sweep.
             this.#rejectedThisSweep.add(String(candidate.lobby.id));
-            const inviteLimit = String(error?.errorCode ?? "").toUpperCase() === "PARTY_INVITE_LIMIT";
-            if (inviteLimit) {
-              // The party already holds its maximum number of invitations, so the client refuses
-              // browser joins outright and waiting cannot help. Such rooms are parked for a long
-              // while instead of being retried on every sweep.
+            // The client reports rejections as errorCode "RPC_ERROR" with the meaningful code in
+            // the message body, so matching the code field alone never fired - every rejection
+            // showed the raw HTTP line instead of an explanation.
+            const blob = `${error?.errorCode ?? ""} ${error?.message ?? ""}`.toUpperCase();
+            const inviteLimit = blob.includes("PARTY_INVITE_LIMIT");
+            // PARTY_SIZE_LIMIT means the party behind the listing has no seat left, however many
+            // slots the browser snapshot still claims to show. Waiting cannot make seats appear
+            // on a 3-second cadence, so these rooms are parked for the same long cooldown as
+            // invite-limit ones instead of burning a join attempt on every sweep.
+            if (inviteLimit || blob.includes("PARTY_SIZE_LIMIT")) {
               this.#rememberExhausted(candidate.lobby, this.inviteLimitCooldownMs);
             }
+            // INVALID_WHILE_PARTY_IN_ACTION is the client mid-transition (a leave or join that has
+            // not fully settled), so the room itself is fine and the next sweep simply succeeds.
+            const partyBusy = blob.includes("INVALID_WHILE_PARTY_IN_ACTION");
             this.#emit({
               type: "skipped",
               lobby: candidate.lobby,
               reason: inviteLimit ? "invite-limit" : "not-joinable",
-              message: inviteLimit ? "邀请名单已满，无法加入（PARTY_INVITE_LIMIT）" : describe(error),
+              message: inviteLimit
+                ? "邀请名额已满（上限 50），无法加入"
+                : partyBusy
+                  ? "客户端正忙（上一步操作还没完成），稍后自动重试"
+                  : blob.includes("PARTY_SIZE_LIMIT")
+                    ? "房间人数已满，无法加入"
+                    : describe(error),
               selectedSummary: summarizeLobby(candidate.lobby)
             });
             continue;
