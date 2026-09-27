@@ -81,6 +81,9 @@ export class SearchController {
   #watchDeadlineAt;
   // Cadence for the watch loop while reads keep failing; 0 means "use the normal poll interval".
   #watchDelayMs = 0;
+  // Trailing debounce for WebSocket lobby pushes, so a burst of client events coalesces into one
+  // watch run instead of one run per event.
+  #pushTimer = undefined;
   // A room the user was already sitting in when the search started. It is watched under the same rules
   // as a joined one, but never left automatically, because the tool did not put the user there.
   #adoptedRoom = false;
@@ -106,8 +109,14 @@ export class SearchController {
     // A party whose invitation list is already full refuses browser joins outright
     // (HTTP 400 / PARTY_INVITE_LIMIT), so it is set aside for far longer than a merely stale room.
     inviteLimitCooldownMs = 600_000,
+    // The watch loop (holding a joined room) never polls faster than this, even when the browser
+    // poll interval is small: every watch rule works on seconds, so a faster tick is pure load.
+    // 0 disables the floor - the tests drive time with 10ms intervals.
+    watchIntervalFloorMs = 1_000,
     // Pacing inside one sweep, so a long list of plausible rooms cannot flood the client.
     attemptGapMs = 500,
+    // How long a burst of WebSocket lobby pushes is coalesced before the watch reacts.
+    pushDebounceMs = 200,
     maxAttemptsPerSweep = 20,
     clock = () => Date.now(),
     emit = () => {}
@@ -122,7 +131,9 @@ export class SearchController {
     this.exhaustedCooldownMs = exhaustedCooldownMs;
     this.stallTimeoutMs = stallTimeoutMs;
     this.inviteLimitCooldownMs = inviteLimitCooldownMs;
+    this.watchIntervalFloorMs = watchIntervalFloorMs;
     this.attemptGapMs = attemptGapMs;
+    this.pushDebounceMs = pushDebounceMs;
     this.maxAttemptsPerSweep = maxAttemptsPerSweep;
     this.clock = clock;
     this.emit = emit;
@@ -156,9 +167,38 @@ export class SearchController {
     };
   }
 
+  /**
+   * Whether the client's WebSocket is currently connected and pushing lobby events. While it is,
+   * the watch is driven by `acceptLobbyPush` and the periodic backstop widens to `maxIntervalMs`;
+   * the main process flips this with the socket's up/down signal.
+   */
+  watchPushConnected = false;
+
+  /**
+   * Feeds a joined-lobby state that the client pushed over its WebSocket (`/lol-lobby/v2/lobby`).
+   * A push makes the next scheduled watch fetch redundant - the data has already arrived - so the
+   * pending timer is cancelled and the watch runs on the pushed payload after a short coalescing
+   * debounce (a burst of client events then costs one run, not one per event). A `null`/`undefined`
+   * payload means the room is gone (the client pushes a Delete with no data).
+   *
+   * Returns whether the push was consumed; anything but a watched joined room ignores it, since
+   * search sweeps and verification must read fresh data for their own decisions.
+   */
+  acceptLobbyPush(lobby) {
+    if (!this.#running || this.#state !== STATES.joined || !this.#watchJoined) return false;
+    const signal = this.#abort?.signal;
+    clearTimeout(this.#timer);
+    clearTimeout(this.#pushTimer);
+    this.#pushTimer = setTimeout(() => {
+      this.#pushTimer = undefined;
+      if (this.#stale(signal) || !this.#watchJoined) return;
+      this.#watchWith(signal, lobby).catch((error) => this.#watchFailure(signal, error));
+    }, this.pushDebounceMs);
+    return true;
+  }
+
   /** Applies non-sensitive settings without restarting an active search. */
-  configure({ pollIntervalMs, minPlayers, nameKeywords, maxInvites, stallTimeoutMs } = {}) {
-    if (Number.isFinite(pollIntervalMs) && pollIntervalMs > 0) {
+  configure({ pollIntervalMs, minPlayers, nameKeywords, maxInvites, stallTimeoutMs } = {}) {    if (Number.isFinite(pollIntervalMs) && pollIntervalMs > 0) {
       this.intervalMs = pollIntervalMs;
       this.#delayMs = pollIntervalMs;
     }
@@ -263,6 +303,8 @@ export class SearchController {
     this.#abort?.abort();
     clearTimeout(this.#timer);
     this.#timer = undefined;
+    clearTimeout(this.#pushTimer);
+    this.#pushTimer = undefined;
     this.#selected = undefined;
     this.#watchJoined = false;
     this.#watchingSummary = undefined;
@@ -314,7 +356,9 @@ export class SearchController {
     for (const [id, record] of this.#exhaustedRooms) {
       if (this.clock() >= record.expiresAt) this.#exhaustedRooms.delete(id);
     }
-    await this.#maybeRefresh(signal, { force: true });
+    // Fire and forget, for the same reason as in `#cycle`: the client's rescan and the backoff
+    // sleep now overlap instead of adding up before the next sweep.
+    void this.#maybeRefresh(signal, { force: true });
     if (this.#stale(signal)) return;
     this.#delayMs = this.#sweepDelayMs;
     this.#sweepDelayMs = Math.min(this.#sweepDelayMs * 2, this.maxSweepIntervalMs);
@@ -348,8 +392,11 @@ export class SearchController {
     if (this.#stale(signal)) return;
     try {
       this.#transition(STATES.searching);
-      // Ask the client to re-scan its browser instead of serving a stale cache.
-      await this.#maybeRefresh(signal);
+      // Ask the client to re-scan its browser, but do not wait for it: the refresh POST can take
+      // seconds (5s was observed on a busy client), and serialising it in front of every list fetch
+      // slowed the whole search loop by exactly that much every cycle. The rescan lands in time for
+      // the next cycle's list read.
+      void this.#maybeRefresh(signal);
       const lobbies = await this.provider.listLobbies({ signal });
       // The client answered, so whatever failed before is over. Without this a single stalled request
       // left "最近错误" showing for the rest of the session even though the search had recovered.
@@ -423,7 +470,12 @@ export class SearchController {
             // slots the browser snapshot still claims to show. Waiting cannot make seats appear
             // on a 3-second cadence, so these rooms are parked for the same long cooldown as
             // invite-limit ones instead of burning a join attempt on every sweep.
-            if (inviteLimit || blob.includes("PARTY_SIZE_LIMIT")) {
+            // INVALID_ROLE_TRANSITION is the room refusing the joiner over a role/team-state
+            // conflict; it does not clear by retrying seconds later either, so the same parking
+            // applies - the user's log showed the identical room hammered every sweep without a
+            // single different outcome.
+            const roleConflict = blob.includes("INVALID_ROLE_TRANSITION");
+            if (inviteLimit || blob.includes("PARTY_SIZE_LIMIT") || roleConflict) {
               this.#rememberExhausted(candidate.lobby, this.inviteLimitCooldownMs);
             }
             // INVALID_WHILE_PARTY_IN_ACTION is the client mid-transition (a leave or join that has
@@ -439,7 +491,9 @@ export class SearchController {
                   ? "客户端正忙（上一步操作还没完成），稍后自动重试"
                   : blob.includes("PARTY_SIZE_LIMIT")
                     ? "房间人数已满，无法加入"
-                    : describe(error),
+                    : roleConflict
+                      ? "房间不接受当前加入状态（角色冲突），已暂时跳过；若多个房间均如此，重启客户端后再试"
+                      : describe(error),
               selectedSummary: summarizeLobby(candidate.lobby)
             });
             continue;
@@ -513,8 +567,9 @@ export class SearchController {
   }
 
   /**
-   * Re-checks a joined room so a room that goes stale is abandoned instead of sat in. Only the
-   * invite-budget rule is re-evaluated here: a room that fills up is where it should stay.
+   * Re-checks a joined room so a room that goes stale is abandoned instead of sat in. The fetch
+   * and the judgment are split (`#watchWith`) so a WebSocket push can run the judgment on data
+   * the client already delivered, without another round trip.
    */
   async #watch(signal) {
     if (this.#stale(signal) || !this.#watchJoined) return;
@@ -528,7 +583,17 @@ export class SearchController {
     } catch (error) {
       return this.#watchFailure(signal, error);
     }
-    if (this.#stale(signal)) return;
+    return this.#watchWith(signal, current);
+  }
+
+  /** Watch rules applied to lobby data, whether it was fetched or pushed in. */
+  async #watchWith(signal, current) {
+    if (this.#stale(signal) || !this.#watchJoined) return;
+    if (current) {
+      this.#lastError = undefined;
+      this.#diagnostics = undefined;
+      this.#watchDelayMs = 0;
+    }
     if (!current) {
       // The lobby is gone: the game started, or the room was closed or left. Nothing to watch.
       this.#watchJoined = false;
@@ -650,12 +715,24 @@ export class SearchController {
     });
   }
 
+  /**
+   * Watching a joined room needs ~1s granularity, not the user's poll cadence: it halves the request
+   * rate while a room is being held without delaying any decision the watch actually makes, since
+   * every watch rule (invite budget, stall timeout) works on seconds anyway. While the client's
+   * WebSocket is pushing lobby events, the timer demotes to a backstop against a silent push loss:
+   * one fetch per `maxIntervalMs` instead of one per second.
+   */
+  #watchIntervalMs() {
+    if (this.watchPushConnected) return Math.max(this.maxIntervalMs, this.watchIntervalFloorMs);
+    return Math.max(this.intervalMs, this.watchIntervalFloorMs);
+  }
+
   #scheduleWatch(signal) {
     if (this.#stale(signal) || !this.#watchJoined) return;
     clearTimeout(this.#timer);
     this.#timer = setTimeout(() => {
       this.#watch(signal).catch((error) => this.#watchFailure(signal, error));
-    }, this.#watchDelayMs || this.intervalMs);
+    }, this.#watchDelayMs || this.#watchIntervalMs());
   }
 
   /** A failure while watching a joined room: retried, unless the client session itself is gone. */
@@ -670,7 +747,7 @@ export class SearchController {
     // A failing watch must not retry at the poll cadence. Leaving a room that keeps timing out would
     // otherwise fire a DELETE every interval - at a 500ms poll that is two futile writes a second aimed
     // at a client that is already not answering.
-    this.#watchDelayMs = Math.min(Math.max(this.#watchDelayMs || this.intervalMs, this.intervalMs) * 2, this.maxIntervalMs);
+    this.#watchDelayMs = Math.min(Math.max(this.#watchDelayMs || this.#watchIntervalMs(), this.intervalMs) * 2, this.maxIntervalMs);
     this.#emit({ type: "error", message: this.#lastError, retryInMs: this.#watchDelayMs });
     return this.#scheduleWatch(signal);
   }

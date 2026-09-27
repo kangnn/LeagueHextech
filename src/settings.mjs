@@ -22,7 +22,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // Which full theme (token set) the renderer paints with; "custom" pairs with accentColor below.
   themeId: "dark",
   // Purely cosmetic: the accent colour the renderer paints its controls with.
-  accentColor: "#4cc2e0"
+  accentColor: "#4cc2e0",
+  // A version the user declined when an automatic check asked. Automatic checks stop mentioning it
+  // until something newer shows up; a manual check ignores the skip entirely.
+  skippedUpdateVersion: ""
 });
 
 const LIMITS = Object.freeze({
@@ -66,6 +69,9 @@ export function sanitizeSettings(input) {
     : DEFAULT_SETTINGS.accentColor;
   settings.themeId = ["dark", "graphite", "cyber", "aurora", "mint", "butter", "sakura", "custom"]
     .includes(source.themeId) ? source.themeId : DEFAULT_SETTINGS.themeId;
+  settings.skippedUpdateVersion = typeof source.skippedUpdateVersion === "string"
+    ? source.skippedUpdateVersion.slice(0, 32)
+    : DEFAULT_SETTINGS.skippedUpdateVersion;
   return settings;
 }
 

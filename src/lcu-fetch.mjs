@@ -40,11 +40,16 @@ export function slowRequestWarning({ method = "GET", path, elapsedMs, thresholdM
  * The client goes quiet for a moment now and then - while it loads a game, or right after a join - and a
  * timeout on a read is harmless to repeat. A write is never repeated: the request that timed out may
  * already have been applied, and joining or leaving a room twice is not the same as doing it once.
+ *
+ * A pooled socket the server closed between uses also fails immediately (ECONNRESET/EPIPE on a
+ * reused socket). The request was never processed, so one clean retry on a fresh connection is both
+ * safe and cheaper than paying a handshake on every request.
  */
 export function shouldRetryRequest({ method = "GET", error, attempt = 0, aborted = false } = {}) {
   if (attempt >= 1) return false;
   if (method !== "GET") return false;
   if (aborted) return false;
+  if (error?.reusedSocket && (error.code === "ECONNRESET" || error.code === "EPIPE")) return true;
   return error?.code === TIMEOUT_CODE;
 }
 
@@ -55,12 +60,18 @@ export function shouldRetryRequest({ method = "GET", error, attempt = 0, aborted
  */
 export function createLcuFetch({ certificate = RIOT_CERTIFICATE, timeoutMs = 15_000, onWarning = () => {}, maxSockets = 4 } = {}) {
   let pinningFailed = false;
-  // Connections are deliberately NOT kept alive. The LCU is a small embedded server that closes idle
-  // sockets on its own schedule, and a pooled socket that the server has already closed fails the
-  // classic way: the request is written into a dying socket and then waits out the full timeout
-  // instead of erroring, which surfaced as sporadic "LCU 请求超时" on reads and writes alike. A fresh
-  // loopback connection costs a handshake measured in microseconds, so it is the cheaper trade.
-  const agent = new Agent({ keepAlive: false, maxSockets });
+  // Connections are pooled: the search and the watch fire a request every few hundred milliseconds,
+  // and a full TLS handshake on each of them is the single largest steady-state cost of the app. The
+  // old worry - a pooled socket the server has already closed swallowing a request until the timeout -
+  // is handled rather than avoided: idle sockets are dropped after a few seconds (well under the
+  // client's own idle-close schedule), and a GET that still lands on a dying socket fails immediately
+  // and is retried once on a fresh connection (see `shouldRetryRequest`).
+  const agent = new Agent({
+    keepAlive: true,
+    maxSockets,
+    maxFreeSockets: 2,
+    timeout: 10_000
+  });
 
   const send = (url, { method = "GET", headers = {}, signal, rejectUnauthorized, ca }) =>
     new Promise((resolve, reject) => {
@@ -108,7 +119,13 @@ export function createLcuFetch({ certificate = RIOT_CERTIFICATE, timeoutMs = 15_
       const onAbort = () => outgoing.destroy(new Error("aborted"));
       const detach = () => signal?.removeEventListener?.("abort", onAbort);
       outgoing.on("close", detach);
-      outgoing.on("error", (error) => { detach(); reject(error); });
+      outgoing.on("error", (error) => {
+        detach();
+        // Whether the socket came from the pool is what separates "the server closed a pooled socket
+        // between uses" (a GET may be retried) from a fresh-connection failure (never retried).
+        error.reusedSocket = Boolean(outgoing.reusedSocket);
+        reject(error);
+      });
       if (signal) {
         if (signal.aborted) outgoing.destroy(new Error("aborted"));
         else signal.addEventListener("abort", onAbort, { once: true });

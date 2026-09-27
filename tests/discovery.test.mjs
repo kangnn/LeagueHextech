@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 /**
  * LCU discovery gating. Runs on plain Node: the process probe is injected, so nothing here needs a
@@ -14,8 +16,8 @@ const { discoverLcuConnection } = await import(root + "lcu-discovery.mjs");
 const env = { LEAGUE_INSTALL_PATH: undefined, ProgramFiles: "Z:\\nonexistent", "ProgramFiles(x86)": "Z:\\nonexistent" };
 
 let failures = 0;
-const check = (name, fn) => {
-  try { fn(); console.log("PASS", name); }
+const check = async (name, fn) => {
+  try { await fn(); console.log("PASS", name); }
   catch (error) { failures += 1; console.log("FAIL", name, "-", error.message); }
 };
 
@@ -41,6 +43,37 @@ check("a live process that yields no parameters is a different, reported-as-such
   assert.ok(error, "expected a rejection");
   assert.equal(error.hasClient, true);
   assert.ok(error.message.includes("无法获取连接参数"), error.message);
+});
+
+check("a successful discovery is reused while the process list is unchanged, and recomputed when it changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lcu-disc-"));
+  try {
+    const clientDir = path.join(dir, "LeagueClient");
+    await mkdir(clientDir, { recursive: true });
+    const logPath = path.join(clientDir, "1_2_789_LeagueClientUx.log");
+    const commandLine = (token) =>
+      `--app-pid=789 --app-port=1234 --remoting-auth-token=${token}`;
+    await writeFile(logPath, commandLine("tokA"), "utf8");
+    const testEnv = { ...env, LEAGUE_INSTALL_PATH: dir };
+
+    const discover = (pids) => discoverLcuConnection({ env: testEnv, listPids: async () => pids });
+
+    const first = await discover([789]);
+    assert.equal(first.token, "tokA");
+    assert.equal(first.source, "client-log");
+
+    // The same process list must serve the cached answer: the file now carries tokB, but a live
+    // process never changes its port/token, so re-reading it would be pure cost.
+    await writeFile(logPath, commandLine("tokB"), "utf8");
+    const second = await discover([789]);
+    assert.equal(second.token, "tokA", "expected the cached connection, got a re-read");
+
+    // A different process list (restart) invalidates the cache and re-reads the sources.
+    const third = await discover([789, 999]);
+    assert.equal(third.token, "tokB", "expected a fresh read after the process list changed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 console.log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);

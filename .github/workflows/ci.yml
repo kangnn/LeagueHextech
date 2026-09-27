@@ -1,7 +1,8 @@
 name: tests
 
+# Every push already builds a release artifact, which is the real integration check; these suites
+# are kept for manual runs and pull requests instead of doubling the CI load on every commit.
 on:
-  push:
   pull_request:
   workflow_dispatch:
 

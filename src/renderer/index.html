@@ -258,6 +258,7 @@
 <div class="row" id="selectionRow" hidden><span class="k">当前房间</span><span class="chips" id="selection"></span></div>
 <div class="row error-row" id="errorRow" hidden><span class="k">最近错误</span><span class="v" id="error"></span></div>
 <div class="row" id="updateRow" hidden><span class="k">更新</span><span class="v" id="updateText"></span><button id="installUpdate" class="secondary" hidden>重启并更新</button></div>
+<div class="row" id="updatePromptRow" hidden><span class="k">更新</span><span class="v" id="updatePromptText"></span><button id="downloadUpdate" class="secondary">立即更新</button><button id="skipUpdate" class="secondary">跳过该版本</button><button id="laterUpdate" class="secondary">稍后</button></div>
 
 <section class="panel">
   <div class="panel-head">
@@ -363,14 +364,27 @@ function toast(message, kind = "info") {
   setTimeout(() => item.remove(), kind === "bad" ? 8000 : 4000);
 }
 
+// An automatic check that found a new version routes its question here: the row offers the answer
+// buttons instead of the app downloading on its own. `notice` values come from the main process:
+// prompt = ask, silent = a background check with nothing to say, download = a manual check that
+// already started downloading.
+let promptedUpdateVersion = "";
+
 function renderUpdate(state) {
+  const silent = state?.notice === "silent";
+  const prompt = state?.notice === "prompt";
   const sticky = state?.status === "downloading" || state?.status === "ready";
   $("updateRow").hidden = !sticky;
   $("updateText").textContent = sticky ? updateSummary(state) : "";
   $("installUpdate").hidden = state?.status !== "ready";
-  if (state?.status === "uptodate") toast(`已是最新版本（v${state.currentVersion ?? ""}）`, "ok");
-  if (state?.status === "available") toast(`发现新版本 v${state.version}，开始下载…`);
-  if (state?.status === "error") toast(`更新检查失败：${state.message ?? "未知错误"}`, "bad");
+  $("updatePromptRow").hidden = !prompt;
+  $("updatePromptText").textContent = prompt ? `发现新版本 v${state.version}，是否更新？` : "";
+  promptedUpdateVersion = prompt ? String(state.version ?? "") : promptedUpdateVersion;
+  if (!silent) {
+    if (state?.status === "uptodate") toast(`已是最新版本（v${state.currentVersion ?? ""}）`, "ok");
+    if (state?.status === "available" && state?.notice === "download") toast(`发现新版本 v${state.version}，开始下载…`);
+    if (state?.status === "error") toast(`更新检查失败：${state.message ?? "未知错误"}`, "bad");
+  }
   if (state?.currentVersion) setVersionLabels(state.currentVersion);
 }
 
@@ -836,6 +850,21 @@ $("installUpdate").onclick = async () => {
   await window.searcher.installUpdate();
 };
 
+// The three answers to "发现新版本，是否更新？". Accepting hands over to the persistent download
+// row; skipping records the version so automatic checks stop asking about exactly this one.
+$("downloadUpdate").onclick = async () => {
+  $("updatePromptRow").hidden = true;
+  await window.searcher.downloadUpdate();
+};
+$("skipUpdate").onclick = async () => {
+  const version = promptedUpdateVersion;
+  renderUpdate(await window.searcher.skipUpdateVersion(version));
+  toast(`已跳过 v${version}，之后不再自动提醒这个版本`, "ok");
+};
+$("laterUpdate").onclick = () => {
+  $("updatePromptRow").hidden = true;
+};
+
 // A double click would write two identical "saved" lines (shown as ×2), which reads like something
 // went wrong; a short guard treats the second click as part of the first save.
 let saveInFlight = false;
@@ -873,9 +902,12 @@ window.searcher.onEvent((event) => {
   countEvent(event);
   if (event.type === "update") {
     renderUpdate(event);
-    // "checking" and download ticks are transient; only an outcome (a new version, up to date,
-    // an error) is worth a log line. Logging the start is what made one check show up twice.
-    if (event.status !== "downloading" && event.status !== "checking") append(event);
+    // Only outcomes earn a log line: a downloaded update, "already current" after a manual check,
+    // or a failure. "checking", download ticks and "available" (covered by the ask row or the
+    // download toast) are transient - logging the start is what made one check show up twice.
+    // A "silent" event is a background check with nothing to say: no toast, no log line at all.
+    const outcome = event.status === "ready" || event.status === "uptodate" || event.status === "error";
+    if (outcome && event.notice !== "silent") append(event);
     return;
   }
   if (event.type === "client-status") {

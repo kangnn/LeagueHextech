@@ -109,7 +109,7 @@ await provider.joinLobby("p2").then(() => check("join rejection carries an error
 const events = [];
 const controller = new SearchController(provider, {
   policy, emit: (event) => events.push(event),
-  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0, exhaustedCooldownMs: 60_000, inviteLimitCooldownMs: 60_000, stallTimeoutMs: 400
 });
 
@@ -146,9 +146,10 @@ await sleep(600);
 check("a room that never grows is given up on", state.left === 2, `left=${state.left}`);
 check("stall leave is logged", events.some((e) => e.type === "left-stalled-room" && e.message.includes("停滞")), JSON.stringify(events.at(-1)?.message));
 
-state.rows = [row("p1", 1), row("p2", 1, "10钢禁长手莉莉娅"), row("p3", 2), row("p4", 2)];
+state.rows = [row("p1", 1), row("p2", 1, "10钢禁长手莉莉娅"), row("p3", 2), row("p4", 2), row("p5", 2)];
 state.joinError.p3 = "INVALID_WHILE_PARTY_IN_ACTION";
 state.joinError.p4 = "PARTY_SIZE_LIMIT";
+state.joinError.p5 = "INVALID_ROLE_TRANSITION";
 await sleep(250);
 const inviteLimitSkips = events.filter((e) => e.type === "skipped" && e.message.includes("邀请名额已满")).length;
 check("invite-limit rooms are explained in plain language", inviteLimitSkips >= 1, `skips=${inviteLimitSkips}`);
@@ -162,6 +163,11 @@ check("party-size rooms are parked, not retried every sweep", state.joins.p4 ===
 const p2Attempts = state.joins.p2 ?? 0;
 await sleep(400);
 check("invite-limit rooms are parked, not retried every sweep", state.joins.p2 === p2Attempts, `attempts ${p2Attempts} -> ${state.joins.p2}`);
+check("a role-conflict rejection is explained instead of dumping the HTTP line",
+  events.some((e) => e.type === "skipped" && e.message.includes("角色冲突")), JSON.stringify(events.filter((e) => e.type === "skipped").map((e) => e.message)));
+const p5Attempts = state.joins.p5 ?? 0;
+await sleep(400);
+check("role-conflict rooms are parked, not retried every sweep", state.joins.p5 === p5Attempts, `attempts ${p5Attempts} -> ${state.joins.p5}`);
 check("no unhandled errors", events.filter((e) => e.type === "error").length === 0, JSON.stringify(events.filter((e) => e.type === "error").map((e) => e.message)));
 controller.stop();
 
@@ -183,7 +189,7 @@ function floorHarness({ stallTimeoutMs, players, invites = 1, floor = 5, inRoom 
     policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: floor, maxInvites: 50, modePolicy: "attempt" },
     stallTimeoutMs,
     emit: (event) => events.push(event),
-    intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+    intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
     attemptGapMs: 0, refreshThrottleMs: 0, exhaustedCooldownMs: 60_000, inviteLimitCooldownMs: 60_000
   });
   return { controller, provider, events };
@@ -252,10 +258,13 @@ const fs = await import("node:fs/promises");
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hextech-settings-"));
 const writeSettings = (value) => fs.writeFile(path.join(dir, "settings.json"), JSON.stringify(value), "utf8");
 
-await writeSettings({ minPlayers: 5, stallTimeoutMs: 180_000 });
+await writeSettings({ minPlayers: 5, stallTimeoutMs: 180_000, skippedUpdateVersion: "0.1.5" });
 const legacy = SettingsStore.at(dir);
 await legacy.load();
 check("a stored 180s stall timeout (the old default) moves to the new one", legacy.settings.stallTimeoutMs === 30_000, String(legacy.settings.stallTimeoutMs));
+check("a skipped update version survives the settings round-trip", legacy.settings.skippedUpdateVersion === "0.1.5", String(legacy.settings.skippedUpdateVersion));
+await legacy.update({ minPlayers: 4 });
+check("a settings save keeps the skipped update version", legacy.settings.skippedUpdateVersion === "0.1.5", String(legacy.settings.skippedUpdateVersion));
 
 await writeSettings({ stallTimeoutMs: 120_000 });
 const chosen = SettingsStore.at(dir);
@@ -290,7 +299,7 @@ const readController = new SearchController(readProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 4 },
   stallTimeoutMs: 30_000,
   emit: () => {},
-  intervalMs: 20, maxIntervalMs: 20, sweepIntervalMs: 20, maxSweepIntervalMs: 20,
+  intervalMs: 20, maxIntervalMs: 20, sweepIntervalMs: 20, maxSweepIntervalMs: 20, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0
 });
 await readController.start();
@@ -317,7 +326,7 @@ const churnController = new SearchController(churnProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 4, maxInvites: 50, modePolicy: "attempt" },
   stallTimeoutMs: 30_000,
   emit: (event) => churnEvents.push(event),
-  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0, exhaustedCooldownMs: 60_000, inviteLimitCooldownMs: 600_000
 });
 await churnController.start();
@@ -330,12 +339,15 @@ check("the rejection is explained as an invite-budget failure",
 check("the dead room is not joined again while the browser still reports it unchanged",
   churn.joins === 1, `joins=${churn.joins}`);
 
-/* ---------- idle connections are not pooled ---------- */
-// The LCU closes idle sockets on its own schedule; reusing one that it already closed is what produced
-// sporadic timeouts on reads and writes alike.
+/* ---------- the LCU agent pools connections, with the dying-socket race handled ---------- */
+// Reuse is the cheapest way to keep a per-few-hundred-ms request load off the client; the old
+// "reuse swallows a request until timeout" hazard is handled instead of avoided: idle sockets are
+// dropped quickly, and a GET that still lands on a server-closed socket is retried once.
 const fetchSource = await fs.readFile(new URL(root + "lcu-fetch.mjs"), "utf8");
-check("the LCU agent does not keep connections alive", /keepAlive: false/.test(fetchSource));
-check("no stale keep-alive setting is left behind", !/keepAlive: true/.test(fetchSource));
+check("the LCU agent pools connections and drops idle ones before the client does",
+  /keepAlive: true/.test(fetchSource) && /timeout: 10_000/.test(fetchSource));
+check("a GET on a reused socket the server closed is retried once",
+  /reusedSocket/.test(fetchSource) && /ECONNRESET/.test(fetchSource));
 
 /* ---------- a failing watch backs off instead of hammering the client ---------- */
 let reads = 0;
@@ -358,7 +370,7 @@ const flakyController = new SearchController(flakyProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 4, maxInvites: 50 },
   stallTimeoutMs: 30_000,
   emit: (event) => flakyEvents.push(event),
-  intervalMs: 10, maxIntervalMs: 400, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  intervalMs: 10, maxIntervalMs: 400, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0
 });
 await flakyController.start();
@@ -390,7 +402,7 @@ const leaveController = new SearchController(leaveProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 4, maxInvites: 50 },
   stallTimeoutMs: 30_000,
   emit: (event) => leaveEvents.push(event),
-  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0
 });
 await leaveController.start();
@@ -402,6 +414,46 @@ check("leaving a room is announced before the client answers", leavingIndex >= 0
 check("the announcement precedes the result", leavingIndex >= 0 && leftIndex > leavingIndex, `leaving=${leavingIndex} left=${leftIndex}`);
 check("the leave reports how long the client took", Number(leaveEvents[leftIndex]?.elapsedMs) >= 50, String(leaveEvents[leftIndex]?.elapsedMs));
 leaveController.stop();
+
+/* ---------- WebSocket lobby pushes drive the watch ---------- */
+// A dedicated harness with a slow clock: the watch backstop is 1s away, so a push that reacts within
+// 100ms provably did not come from a fetch.
+function pushHarness() {
+  const events = [];
+  let lobby = normalize(joined("push-room", 3, 1));
+  let reads = 0;
+  const provider = {
+    async listLobbies() { return [normalize(row("push-room", 1))]; },
+    async refreshLobbyList() {},
+    async joinLobby() {},
+    async currentLobby() { reads += 1; return lobby; },
+    async leaveLobby() {}
+  };
+  const controller = new SearchController(provider, {
+    policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 5, maxInvites: 50, modePolicy: "attempt" },
+    emit: (event) => events.push(event),
+    intervalMs: 1_000, maxIntervalMs: 1_000, sweepIntervalMs: 1_000, maxSweepIntervalMs: 1_000,
+    watchIntervalFloorMs: 0, attemptGapMs: 0, refreshThrottleMs: 0, pushDebounceMs: 0, stallTimeoutMs: 60_000
+  });
+  return { controller, events, reads: () => reads, setLobby: (value) => { lobby = value; } };
+}
+
+const pushed = pushHarness();
+await pushed.controller.start();
+check("the push harness joined its room", pushed.controller.state === "joined", pushed.controller.state);
+
+const readsBeforePush = pushed.reads();
+pushed.controller.watchPushConnected = true;
+const consumedForReal = pushed.controller.acceptLobbyPush(normalize(joined("push-room", 5, 1)));
+check("a push is accepted while a room is watched", consumedForReal === true, String(consumedForReal));
+await sleep(80);
+check("the push updated the watch without a fetch", pushed.reads() === readsBeforePush, `reads ${readsBeforePush} -> ${pushed.reads()}`);
+check("the pushed change is announced", pushed.events.some((e) => e.type === "watching" && e.lobby?.playerCount === 5), JSON.stringify(pushed.events.find((e) => e.type === "watching")));
+
+const consumedGone = pushed.controller.acceptLobbyPush(undefined);
+await sleep(80);
+check("an empty push (room deleted) ends the watch", consumedGone === true && pushed.controller.state === "idle" && pushed.controller.status().running === false, `consumed=${consumedGone} state=${pushed.controller.state}`);
+check("a push is ignored once idle", pushed.controller.acceptLobbyPush(normalize(joined("push-room", 6, 1))) === false);
 
 /* ---------- the list count and the filtered count are different numbers ---------- */
 const mixedProvider = {
@@ -421,7 +473,7 @@ const mixedController = new SearchController(mixedProvider, {
   policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 5, maxInvites: 50 },
   stallTimeoutMs: 30_000,
   emit: () => {},
-  intervalMs: 20, maxIntervalMs: 20, sweepIntervalMs: 20, maxSweepIntervalMs: 20,
+  intervalMs: 20, maxIntervalMs: 20, sweepIntervalMs: 20, maxSweepIntervalMs: 20, watchIntervalFloorMs: 0,
   attemptGapMs: 0, refreshThrottleMs: 0
 });
 await mixedController.start();

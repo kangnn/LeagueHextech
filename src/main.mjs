@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_POLICY } from "./eligibility.mjs";
 import { createLcuFetch } from "./lcu-fetch.mjs";
 import { discoverLcuConnection } from "./lcu-discovery.mjs";
-import { LcuCustomLobbyProvider } from "./lcu-provider.mjs";
+import { LcuCustomLobbyProvider, normalize } from "./lcu-provider.mjs";
+import { createLcuWebsocket } from "./lcu-websocket.mjs";
 import { SearchController } from "./search-controller.mjs";
 import { SettingsStore } from "./settings.mjs";
 import { resolveAutoUpdater } from "./updater-loader.mjs";
@@ -32,6 +33,10 @@ let settings;
 let lcuFetch;
 let clientCheckTimer;
 let clientStatus = { connected: false, checkedAt: undefined };
+// The live client socket and the connection (port:token) it was built from; rebuilt whenever
+// discovery reports a different client.
+let lcuSocket;
+let lcuSocketKey = "";
 // Set once the app is really on its way out; until then closing the window only hides it.
 let isQuitting = false;
 
@@ -164,7 +169,9 @@ function publishUpdateProblem(kind, raw) {
 }
 
 function setUpdateState(next) {
-  updateState = { ...updateState, ...next };
+  // `notice` is per-event routing for the renderer (prompt / silent / download) and must not leak
+  // into the next state - a stale "prompt" would re-open the ask on every download tick.
+  updateState = { ...updateState, notice: undefined, ...next };
   publish({ type: "update", ...updateState });
   refreshTray();
 }
@@ -183,7 +190,9 @@ async function setUpdates() {
   // `autoUpdater` is only a property of the module's default export under ESM; treating it as a named
   // export is what made 0.1.1 a dead window (see src/updater-loader.mjs).
   if (!updater) return undefined;
-  updater.autoDownload = true;
+  // Downloads are explicit: a check the user did not ask for (startup, the 6-hour timer) asks first,
+  // and only the user's answer moves bytes. A manual check starts the download itself.
+  updater.autoDownload = false;
   // A user who simply closes the window still ends up current the next time the app starts.
   updater.autoInstallOnAppQuit = true;
   // There is no web-installer flow here, and the updater nags about it unless told so.
@@ -199,8 +208,28 @@ async function setUpdates() {
     error: (message) => publishUpdateProblem("error", message)
   };
   updater.on("checking-for-update", () => setUpdateState({ status: "checking" }));
-  updater.on("update-available", (info) => setUpdateState({ status: "available", version: info?.version }));
-  updater.on("update-not-available", () => setUpdateState({ status: "uptodate", version: undefined, percent: undefined }));
+  updater.on("update-available", (info) => {
+    const version = info?.version;
+    const auto = updateCheckSource === "auto";
+    if (auto && version !== undefined && version === settings?.settings?.skippedUpdateVersion) {
+      // The user already declined this exact version; stay quiet until something newer appears.
+      setUpdateState({ status: "available", version, notice: "silent" });
+      return;
+    }
+    if (auto) {
+      // A background check never downloads on its own: it asks, with buttons in the window.
+      setUpdateState({ status: "available", version, notice: "prompt" });
+      return;
+    }
+    // A manual check means the user asked for it, so the download starts right away as before.
+    setUpdateState({ status: "available", version, notice: "download" });
+    void startUpdateDownload();
+  });
+  updater.on("update-not-available", () => setUpdateState({
+    status: "uptodate", version: undefined, percent: undefined,
+    // A background check that finds nothing new is silence by design; only a manual check reports it.
+    notice: updateCheckSource === "auto" ? "silent" : undefined
+  }));
   updater.on("download-progress", (progress) => setUpdateState({ status: "downloading", percent: Math.round(progress?.percent ?? 0) }));
   updater.on("update-downloaded", (info) => setUpdateState({ status: "ready", version: info?.version, percent: 100 }));
   updater.on("error", (error) => {
@@ -226,17 +255,34 @@ async function setUpdates() {
   return updater;
 }
 
-async function checkForUpdates() {
+// Which kind of check is in flight; the "update-available"/"update-not-available" handlers read it
+// to decide between asking (auto) and acting (manual). Checks are never concurrent in practice.
+let updateCheckSource = "manual";
+
+async function checkForUpdates(source = "manual") {
   if (!updater) {
     publish({ type: "warning", message: "当前是免安装版，不能自动更新；请到发布页下载新版本。" });
     return { ...updateState, supported: false };
   }
+  updateCheckSource = source;
   try {
     await updater.checkForUpdates();
   } catch (error) {
     setUpdateState({ status: "error", message: describeUpdateProblem(String(error?.message ?? error)) });
   }
   return updateState;
+}
+
+async function startUpdateDownload() {
+  // Only an "available" state may start one: this guard also stops a double click from launching
+  // two downloads, and downloadUpdate() is what flips the state on to "downloading"/"ready".
+  if (!updater || updateState.status !== "available") return false;
+  try {
+    await updater.downloadUpdate();
+  } catch (error) {
+    setUpdateState({ status: "error", message: describeUpdateProblem(String(error?.message ?? error)) });
+  }
+  return true;
 }
 
 function installUpdate() {
@@ -249,9 +295,10 @@ function installUpdate() {
 
 function scheduleUpdateCheck() {
   if (!updater) return;
-  // Late enough not to compete with client discovery at startup, then twice a day.
-  setTimeout(() => { checkForUpdates(); }, 20_000).unref?.();
-  setInterval(() => { checkForUpdates(); }, 6 * 60 * 60 * 1000).unref?.();
+  // Late enough not to compete with client discovery at startup, then twice a day. Both are
+  // background checks: they ask before downloading and stay silent when nothing is new.
+  setTimeout(() => { checkForUpdates("auto"); }, 20_000).unref?.();
+  setInterval(() => { checkForUpdates("auto"); }, 6 * 60 * 60 * 1000).unref?.();
 }
 
 /* ------------------------------ window ------------------------------ */
@@ -319,6 +366,15 @@ async function refreshClientStatus() {
       detail: connection.detail,
       checkedAt: Date.now()
     };
+    // A live client means a live socket: this also drives the event-driven watch and liveness.
+    // Socket setup must never break the status readout itself - when it could, one bad connection
+    // object left the indicator stuck on "未检测到客户端" even while a search was talking to the
+    // client just fine.
+    try {
+      ensureLcuSocket(connection);
+    } catch (error) {
+      publish({ type: "warning", message: `实时连接建立失败：${error?.message ?? error}` });
+    }
   } catch (error) {
     clientStatus = {
       connected: false,
@@ -332,14 +388,94 @@ async function refreshClientStatus() {
   return clientStatus;
 }
 
+/** The joined-lobby endpoints the watch loop consumes; every other push is ignored. */
+const LOBBY_PUSH_URIS = new Set(["/lol-lobby/v2/lobby", "/lol-lobby/v1/lobby"]);
+
+function handleLcuSocketEvent({ uri, eventType, data }) {
+  if (!LOBBY_PUSH_URIS.has(uri)) return;
+  if (eventType === "Delete" || data === null || data === undefined) {
+    // The room is gone (game started, or the user left): an empty push runs the room-gone path.
+    controller?.acceptLobbyPush(undefined);
+    return;
+  }
+  if (typeof data !== "object" || Array.isArray(data)) return;
+  try {
+    controller?.acceptLobbyPush(normalize(data));
+  } catch {
+    // A payload shape the normalizer does not know is dropped; the backstop fetch covers the gap.
+  }
+}
+
+/**
+ * Keeps one supervised WebSocket per discovered client. The socket's lifecycle *is* the liveness
+ * signal - it closes exactly when the client exits - so a healthy socket also lets the periodic
+ * discovery skip its work entirely. When discovery reports a different client (restart changes
+ * the port/token), the old session is replaced; its stop() must not be mistaken for a real
+ * disconnect, which is what the session-identity guard in `onDown` is for.
+ */
+function ensureLcuSocket(connection) {
+  const key = `${connection.port}:${connection.token}`;
+  if (lcuSocket && lcuSocketKey === key) return;
+  const stale = lcuSocket;
+  lcuSocket = undefined;
+  lcuSocketKey = "";
+  stale?.stop();
+
+  const session = createLcuWebsocket({
+    port: connection.port,
+    token: connection.token,
+    onEvent: handleLcuSocketEvent,
+    onUp() {
+      controller.watchPushConnected = true;
+      if (!clientStatus.connected) {
+        clientStatus = { ...clientStatus, connected: true, checkedAt: Date.now() };
+        publish({ type: "client-status", ...clientStatus });
+      }
+      refreshTray();
+    },
+    onDown() {
+      // A replaced session stopping itself is not a disconnect.
+      if (lcuSocket !== session) return;
+      controller.watchPushConnected = false;
+      if (clientStatus.connected) {
+        clientStatus = {
+          connected: false,
+          hasClient: true,
+          message: "与 League Client 的实时连接已断开（客户端可能已退出）",
+          checkedAt: Date.now()
+        };
+        publish({ type: "client-status", ...clientStatus });
+      }
+      // The cached connection parameters are now suspect; the next request must re-discover.
+      controller.provider.invalidate();
+      refreshTray();
+      // The pending check may be a 60s one (scheduled while connected); a restarted client should
+      // be found on the much shorter disconnected cadence instead.
+      scheduleClientCheck();
+    }
+  });
+  lcuSocket = session;
+  lcuSocketKey = key;
+  session.start();
+}
+
 function scheduleClientCheck() {
   clearTimeout(clientCheckTimer);
   const delay = clientStatus.connected ? CLIENT_CHECK_CONNECTED_MS : CLIENT_CHECK_DISCONNECTED_MS;
   clientCheckTimer = setTimeout(async () => {
-    if (window && !controller?.status().running) {
-      publish({ type: "client-status", ...(await refreshClientStatus()) });
+    // The reschedule is in a finally: a thrown check must not silently end the loop, or the
+    // indicator freezes on whatever it last showed.
+    try {
+      // A live socket already proves the client is here; discovery would only burn process spawns.
+      if (window && !controller?.status().running && !lcuSocket?.isUp()) {
+        publish({ type: "client-status", ...(await refreshClientStatus()) });
+      }
+    } catch (error) {
+      clientStatus = { connected: false, message: String(error?.message ?? error), checkedAt: Date.now() };
+      publish({ type: "client-status", ...clientStatus });
+    } finally {
+      scheduleClientCheck();
     }
-    scheduleClientCheck();
   }, delay);
   clientCheckTimer.unref?.();
 }
@@ -390,6 +526,14 @@ function start() {
     ipcMain.handle("updates:status", () => updateState);
     ipcMain.handle("updates:check", () => checkForUpdates());
     ipcMain.handle("updates:install", () => installUpdate());
+    // The two answers to an automatic check's question: start moving bytes, or stop being asked
+    // about this exact version (a newer one asks again; a manual check ignores the skip).
+    ipcMain.handle("updates:download", () => startUpdateDownload());
+    ipcMain.handle("updates:skip-version", async (_event, version) => {
+      await settings.update({ skippedUpdateVersion: typeof version === "string" ? version.slice(0, 32) : "" });
+      setUpdateState({ notice: "silent" });
+      return updateState;
+    });
     // The renderer draws its own titlebar, so the window buttons live here. `close` still runs the
     // close-to-tray handler instead of quitting.
     ipcMain.handle("win:minimize", () => window?.minimize());
@@ -426,6 +570,7 @@ app.on("window-all-closed", () => {
   if (!isQuitting) return;
   clearTimeout(clientCheckTimer);
   controller?.stop();
+  lcuSocket?.stop();
   // Drops the pooled LCU sockets so nothing keeps the process alive after the window is gone.
   lcuFetch?.dispose?.();
   app.quit();
