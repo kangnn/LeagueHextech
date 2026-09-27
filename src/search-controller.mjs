@@ -470,7 +470,12 @@ export class SearchController {
             // slots the browser snapshot still claims to show. Waiting cannot make seats appear
             // on a 3-second cadence, so these rooms are parked for the same long cooldown as
             // invite-limit ones instead of burning a join attempt on every sweep.
-            if (inviteLimit || blob.includes("PARTY_SIZE_LIMIT")) {
+            // INVALID_ROLE_TRANSITION is the room refusing the joiner over a role/team-state
+            // conflict; it does not clear by retrying seconds later either, so the same parking
+            // applies - the user's log showed the identical room hammered every sweep without a
+            // single different outcome.
+            const roleConflict = blob.includes("INVALID_ROLE_TRANSITION");
+            if (inviteLimit || blob.includes("PARTY_SIZE_LIMIT") || roleConflict) {
               this.#rememberExhausted(candidate.lobby, this.inviteLimitCooldownMs);
             }
             // INVALID_WHILE_PARTY_IN_ACTION is the client mid-transition (a leave or join that has
@@ -486,7 +491,9 @@ export class SearchController {
                   ? "客户端正忙（上一步操作还没完成），稍后自动重试"
                   : blob.includes("PARTY_SIZE_LIMIT")
                     ? "房间人数已满，无法加入"
-                    : describe(error),
+                    : roleConflict
+                      ? "房间不接受当前加入状态（角色冲突），已暂时跳过；若多个房间均如此，重启客户端后再试"
+                      : describe(error),
               selectedSummary: summarizeLobby(candidate.lobby)
             });
             continue;

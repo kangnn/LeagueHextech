@@ -146,9 +146,10 @@ await sleep(600);
 check("a room that never grows is given up on", state.left === 2, `left=${state.left}`);
 check("stall leave is logged", events.some((e) => e.type === "left-stalled-room" && e.message.includes("停滞")), JSON.stringify(events.at(-1)?.message));
 
-state.rows = [row("p1", 1), row("p2", 1, "10钢禁长手莉莉娅"), row("p3", 2), row("p4", 2)];
+state.rows = [row("p1", 1), row("p2", 1, "10钢禁长手莉莉娅"), row("p3", 2), row("p4", 2), row("p5", 2)];
 state.joinError.p3 = "INVALID_WHILE_PARTY_IN_ACTION";
 state.joinError.p4 = "PARTY_SIZE_LIMIT";
+state.joinError.p5 = "INVALID_ROLE_TRANSITION";
 await sleep(250);
 const inviteLimitSkips = events.filter((e) => e.type === "skipped" && e.message.includes("邀请名额已满")).length;
 check("invite-limit rooms are explained in plain language", inviteLimitSkips >= 1, `skips=${inviteLimitSkips}`);
@@ -162,6 +163,11 @@ check("party-size rooms are parked, not retried every sweep", state.joins.p4 ===
 const p2Attempts = state.joins.p2 ?? 0;
 await sleep(400);
 check("invite-limit rooms are parked, not retried every sweep", state.joins.p2 === p2Attempts, `attempts ${p2Attempts} -> ${state.joins.p2}`);
+check("a role-conflict rejection is explained instead of dumping the HTTP line",
+  events.some((e) => e.type === "skipped" && e.message.includes("角色冲突")), JSON.stringify(events.filter((e) => e.type === "skipped").map((e) => e.message)));
+const p5Attempts = state.joins.p5 ?? 0;
+await sleep(400);
+check("role-conflict rooms are parked, not retried every sweep", state.joins.p5 === p5Attempts, `attempts ${p5Attempts} -> ${state.joins.p5}`);
 check("no unhandled errors", events.filter((e) => e.type === "error").length === 0, JSON.stringify(events.filter((e) => e.type === "error").map((e) => e.message)));
 controller.stop();
 
