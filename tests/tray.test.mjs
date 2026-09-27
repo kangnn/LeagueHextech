@@ -114,7 +114,7 @@ check("the icon is supplied at both scale factors",
 check("closing the window hides it instead of destroying it",
   /window\.on\("close", \(event\) => \{[\s\S]{0,200}preventDefault\(\)[\s\S]{0,120}window\.hide\(\)/.test(main));
 check("the close handler still lets a real quit through", /if \(isQuitting\) return;/.test(main));
-check("quitting is flagged before the window closes", /app\.on\("before-quit", \(\) => \{ isQuitting = true; \}\)/.test(main));
+check("quitting is flagged before the window closes", /app\.on\("before-quit", \(\) => \{\s*isQuitting = true;/m.test(main));
 check("the tray has a context menu with a quit entry",
   /setContextMenu/.test(main) && /label: "退出"/.test(main));
 check("the tray can start and stop the search", /label: running \? "停止搜索" : "开始搜索"/.test(main));

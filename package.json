@@ -14,14 +14,15 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node tests/controller.test.mjs && node tests/renderer.test.mjs && node tests/tray.test.mjs && node tests/discovery.test.mjs && node tests/websocket.test.mjs",
+    "test": "node tests/controller.test.mjs && node tests/renderer.test.mjs && node tests/tray.test.mjs && node tests/discovery.test.mjs && node tests/websocket.test.mjs && node tests/stats.test.mjs",
     "test:controller": "node tests/controller.test.mjs",
     "test:renderer": "node tests/renderer.test.mjs",
     "test:tray": "node tests/tray.test.mjs",
     "test:discovery": "node tests/discovery.test.mjs",
     "build:installer": "electron-builder --win --publish never",
     "build:portable": "node scripts/build-portable.mjs",
-    "icon": "node scripts/make-tray-icon.mjs --preview pictures/tray-icon.png"
+    "icon": "node scripts/make-tray-icon.mjs --preview pictures/tray-icon.png",
+    "test:stats": "node tests/stats.test.mjs"
   },
   "keywords": [
     "league-of-legends",

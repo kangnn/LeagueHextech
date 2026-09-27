@@ -8,6 +8,7 @@ import { LcuCustomLobbyProvider, normalize } from "./lcu-provider.mjs";
 import { createLcuWebsocket } from "./lcu-websocket.mjs";
 import { SearchController } from "./search-controller.mjs";
 import { SettingsStore } from "./settings.mjs";
+import { createStatsReporter } from "./stats.mjs";
 import { resolveAutoUpdater } from "./updater-loader.mjs";
 import { TRAY_ICON_16, TRAY_ICON_32 } from "./tray-icon.mjs";
 
@@ -30,6 +31,7 @@ let window;
 let tray;
 let controller;
 let settings;
+let stats;
 let lcuFetch;
 let clientCheckTimer;
 let clientStatus = { connected: false, checkedAt: undefined };
@@ -544,6 +546,9 @@ function start() {
 
     createTray();
     scheduleClientCheck();
+    // 匿名使用统计（随机 ID + 版本号，失败静默），与更新器一样不许拖慢或干扰启动。
+    stats = createStatsReporter({ userDataPath: app.getPath("userData"), appVersion: app.getVersion() });
+    stats.start();
     // Deliberately not awaited, and wrapped: the updater is optional, so neither a slow import nor a
     // failure inside it can delay or break the rest of startup.
     setUpdates()
@@ -563,7 +568,11 @@ if (!app.requestSingleInstanceLock()) {
   start();
 }
 
-app.on("before-quit", () => { isQuitting = true; });
+app.on("before-quit", () => {
+  isQuitting = true;
+  // 尽力补发下线信号；进程很快退出，发不出去就由服务端的心跳超时兜底。
+  stats?.stop();
+});
 
 app.on("window-all-closed", () => {
   // With a tray icon the app outlives its window, so this only runs during a real quit.
