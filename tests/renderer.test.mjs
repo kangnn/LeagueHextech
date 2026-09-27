@@ -147,8 +147,17 @@ fire({ type: "joined", state: "joined", lobby: lobby("9ff01f04-f50f-4eb9-b0f1-46
 check("a success row is green-toned", log.children[0].dataset.tone === "ok");
 fire({ type: "error", state: "idle", message: "未检测到已登录的 League Client" });
 check("an error row is red-toned", log.children[0].dataset.tone === "bad");
-fire({ type: "skipped", state: "searching", lobby: lobby("2f92c643-767e-4d65-9e56-5db925ac8fcd", 1, undefined), message: "邀请名单已满，无法加入（PARTY_INVITE_LIMIT）" });
+fire({ type: "skipped", state: "searching", lobby: lobby("2f92c643-767e-4d65-9e56-5db925ac8fcd", 1, undefined), message: "邀请名额已满（上限 50），无法加入" });
 check("a skipped room is amber-toned", log.children[0].dataset.tone === "warn");
+
+// The raw LCU rejection carries the full UUID in the request path; the sentence shows the 8-character
+// form and keeps the untouched text one hover away.
+fire({ type: "skipped", state: "searching", lobby: lobby("2f92c643-767e-4d65-9e56-5db925ac8fcd", 1, undefined), message: "无法连接 League Client（POST /lol-lobby/v2/party/2f92c643-767e-4d65-9e56-5db925ac8fcd/join）：boom" });
+const rawSkipLine = log.children[0];
+const rawSkipMsg = rawSkipLine.querySelector(".msg");
+check("a UUID in the message is shortened to 8 characters",
+  rawSkipMsg?.textContent === "无法连接 League Client（POST /lol-lobby/v2/party/2f92c643/join）：boom", rawSkipMsg?.textContent);
+check("the full message stays available on hover", rawSkipMsg?.title?.includes("2f92c643-767e-4d65-9e56-5db925ac8fcd") === true, rawSkipMsg?.title);
 fire({ type: "left-stale-room", state: "searching", lobby: lobby("aaaabbbb-0000-0000-0000-000000000000", 3, 50), message: "邀请已达上限，人数仍为 3，已退出" });
 check("the invite count gets its own chip", log.children[0].querySelector(".invite")?.textContent === "邀请 50");
 
@@ -205,8 +214,9 @@ check("the feed carries a running aggregate",
   [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/") === "2/1/1/1/1",
   [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/"));
 fire({ type: "connecting", state: "connecting" });
-check("starting a new search resets the aggregate",
-  [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/") === "0/0/0/0/0",
+fire({ type: "joining", state: "joining", message: "尝试加入" });
+check("a new search does not reset the aggregate - the panel keeps old lines, so the numbers must match it",
+  [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/") === "3/1/1/1/1",
   [stat("statAttempts"), stat("statJoined"), stat("statAbandoned"), stat("statSkipped"), stat("statErrors")].join("/"));
 
 fire({ type: "joined", state: "joined", running: true, lobby: lobby("ccccdddd-1111-2222-3333-444455556666", 8, 30), message: "已在房间内" });

@@ -90,7 +90,7 @@ const provider = new LcuCustomLobbyProvider({
       const id = decodeURIComponent(path.split("/")[4] ?? "");
       state.joins[id] = (state.joins[id] ?? 0) + 1;
       const failure = state.joinError[id];
-      if (failure) return send(400, { errorCode: failure, httpStatus: 400, message: "invite limit" });
+      if (failure) return send(400, { errorCode: "RPC_ERROR", httpStatus: 400, message: failure });
       state.room = joined(id, 1, 1);
       return send(204);
     }
@@ -101,7 +101,9 @@ const provider = new LcuCustomLobbyProvider({
 });
 state.joinError.p2 = "PARTY_INVITE_LIMIT";
 await provider.joinLobby("p2").then(() => check("join rejection carries an error code", false), (error) => {
-  check("join rejection carries an error code", error.errorCode === "PARTY_INVITE_LIMIT", String(error.errorCode));
+  // The real client reports errorCode "RPC_ERROR" with the meaningful code in the message body;
+  // shaping the double after the real payload is what exposed the matcher that never fired.
+  check("join rejection carries the limit code in its message", error.message.includes("PARTY_INVITE_LIMIT"), String(error.message));
 });
 
 const events = [];
@@ -146,8 +148,8 @@ check("stall leave is logged", events.some((e) => e.type === "left-stalled-room"
 
 state.rows = [row("p1", 1), row("p2", 1, "10钢禁长手莉莉娅")];
 await sleep(250);
-const inviteLimitSkips = events.filter((e) => e.type === "skipped" && e.message.includes("PARTY_INVITE_LIMIT")).length;
-check("invite-limit rooms are logged precisely", inviteLimitSkips >= 1, `skips=${inviteLimitSkips}`);
+const inviteLimitSkips = events.filter((e) => e.type === "skipped" && e.message.includes("邀请名额已满")).length;
+check("invite-limit rooms are explained in plain language", inviteLimitSkips >= 1, `skips=${inviteLimitSkips}`);
 const p2Attempts = state.joins.p2 ?? 0;
 await sleep(400);
 check("invite-limit rooms are parked, not retried every sweep", state.joins.p2 === p2Attempts, `attempts ${p2Attempts} -> ${state.joins.p2}`);

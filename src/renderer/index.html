@@ -511,7 +511,8 @@ function refreshLog() {
 }
 
 // The aggregate over the feed. Counted in the renderer because every number is already in the event
-// stream, and it is deliberately reset when a new search starts, so it describes the current run.
+// stream. It describes the visible panel: the panel keeps lines across runs, so resetting on a new
+// search made the numbers contradict the log right below them. Only clearing the panel zeroes it.
 const counters = { attempts: 0, joined: 0, abandoned: 0, skipped: 0, errors: 0 };
 const COUNTER_IDS = {
   attempts: "statAttempts", joined: "statJoined", abandoned: "statAbandoned",
@@ -520,9 +521,6 @@ const COUNTER_IDS = {
 
 function countEvent(event) {
   switch (event.type) {
-    case "connecting":
-      for (const key of Object.keys(counters)) counters[key] = 0;
-      break;
     case "joining": counters.attempts += 1; break;
     case "joined": counters.joined += 1; break;
     case "left-stale-room":
@@ -534,6 +532,12 @@ function countEvent(event) {
   }
   for (const [key, id] of Object.entries(COUNTER_IDS)) $(id).textContent = String(counters[key]);
 }
+
+// LCU request paths and room summaries carry a full UUID each; the room chips already show 8
+// characters with the full value on hover, and the sentence gets the same treatment instead of a
+// wall of hex pushing the actual explanation off the line.
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const shortenUuids = (text) => text.replace(UUID_RE, (m) => m.slice(0, 8));
 
 function buildLine(event) {
   const line = document.createElement("div");
@@ -554,7 +558,10 @@ function buildLine(event) {
   if (message) {
     const text = document.createElement("span");
     text.className = "msg";
-    text.textContent = message;
+    const shown = shortenUuids(String(message));
+    text.textContent = shown;
+    // Anything that got shortened keeps its full value one hover away.
+    if (shown !== String(message)) text.title = String(message);
     line.append(text);
   }
   const chips = [...chipsFor(event), ...floorChips(event)];

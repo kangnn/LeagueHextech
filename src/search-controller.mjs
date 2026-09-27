@@ -414,18 +414,21 @@ export class SearchController {
           if (error?.skip) {
             // A full, locked or revoked room is not retried until the next sweep.
             this.#rejectedThisSweep.add(String(candidate.lobby.id));
-            const inviteLimit = String(error?.errorCode ?? "").toUpperCase() === "PARTY_INVITE_LIMIT";
+            // The client reports this as errorCode "RPC_ERROR" with "PARTY_INVITE_LIMIT" in the
+            // message body, so matching the code field alone never fired - every dead room showed
+            // the raw HTTP line instead of the explanation.
+            const inviteLimit = `${error?.errorCode ?? ""} ${error?.message ?? ""}`.toUpperCase().includes("PARTY_INVITE_LIMIT");
             if (inviteLimit) {
-              // The party already holds its maximum number of invitations, so the client refuses
-              // browser joins outright and waiting cannot help. Such rooms are parked for a long
-              // while instead of being retried on every sweep.
+              // The party already holds its maximum number of invitations (the client's cap is 50),
+              // so the browser refuses joins outright and waiting cannot help. Such rooms are parked
+              // for a long while instead of being retried on every sweep.
               this.#rememberExhausted(candidate.lobby, this.inviteLimitCooldownMs);
             }
             this.#emit({
               type: "skipped",
               lobby: candidate.lobby,
               reason: inviteLimit ? "invite-limit" : "not-joinable",
-              message: inviteLimit ? "邀请名单已满，无法加入（PARTY_INVITE_LIMIT）" : describe(error),
+              message: inviteLimit ? "邀请名额已满（上限 50），无法加入" : describe(error),
               selectedSummary: summarizeLobby(candidate.lobby)
             });
             continue;
