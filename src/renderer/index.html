@@ -46,9 +46,14 @@
   ::-webkit-scrollbar-thumb { background: #40454d; border-radius: 2px; border: 3px solid transparent; background-clip: content-box; }
   ::-webkit-scrollbar-thumb:hover { background: #565c66; background-clip: content-box; }
   html, body { height: 100%; overflow: hidden; }
-  body { font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+  /* The titlebar and the app column are stacked in normal flow, so the app has to take what is LEFT
+     of the viewport, not the whole of it. A flat `height: 100vh` on .app made the page 38px taller
+     than the window, and with `overflow: hidden` on the body those 38px were unreachable: the event
+     log could be scrolled to its maximum position and its last line was still cut in half. Flex
+     column + `flex: 1` keeps the two in step even if the titlebar's height ever changes. */
+  body { display: flex; flex-direction: column; font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif; margin: 0; background: var(--bg); color: var(--text); }
   /* The log gets its own right-hand column so it is always visible without scrolling the page. */
-  .app { display: grid; grid-template-columns: minmax(430px, 1fr) minmax(360px, .9fr); height: 100vh; min-height: 0; overflow: hidden; }
+  .app { flex: 1 1 auto; display: grid; grid-template-columns: minmax(430px, 1fr) minmax(360px, .9fr); min-height: 0; overflow: hidden; }
   main { padding: 18px 22px 24px; overflow-y: auto; min-height: 0; }
   /* The log column must never grow to fit its content: without the min-height guards a grid item keeps
      its automatic minimum size, the panel stretches to every line it ever logged, and the whole window
@@ -56,7 +61,9 @@
   aside { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--line-strong); background: var(--panel); }
 
   /* ---------- header ---------- */
-  .titlebar { display: flex; align-items: center; gap: 4px; height: 38px; padding: 0 6px 0 14px; background: var(--surface); border-bottom: 1px solid var(--accent-line); -webkit-app-region: drag; user-select: none; }
+  /* `flex: none`: the titlebar is a fixed-height row above the app column, and a flex item would
+     otherwise be squeezed by it instead of keeping its 38px. */
+  .titlebar { flex: none; display: flex; align-items: center; gap: 4px; height: 38px; padding: 0 6px 0 14px; background: var(--surface); border-bottom: 1px solid var(--accent-line); -webkit-app-region: drag; user-select: none; }
   .titlebar button, .tb-version { -webkit-app-region: no-drag; }
   .tb-icon { width: 16px; height: 16px; margin-right: 8px; }
   .tb-title { font-weight: 600; font-size: 13px; letter-spacing: .3px; color: var(--text-body); }

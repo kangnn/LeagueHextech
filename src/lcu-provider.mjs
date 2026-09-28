@@ -21,13 +21,19 @@ function lcuError(message, { status = 0, skip = false, fatal = false } = {}) {
 async function describeRejection(response) {
   try {
     const text = await response.text?.();
-    if (!text) return { errorCode: undefined, detail: "" };
+    if (!text) return { errorCode: undefined, detailCode: undefined, detail: "" };
     const parsed = JSON.parse(text);
     const errorCode = typeof parsed.errorCode === "string" ? parsed.errorCode : undefined;
+    // The actionable code travels in `message`: the client answers a refused join with
+    // `{ errorCode: "RPC_ERROR", message: "INVALID_GAME_VERSION" }`. Carrying it separately is what
+    // lets the caller explain a rejection in plain language, so `errorCode` alone is not enough.
+    const detailCode = typeof parsed.message === "string" && parsed.message.trim()
+      ? parsed.message.trim()
+      : undefined;
     const detail = [parsed.errorCode, parsed.message].filter(Boolean).join("：");
-    return { errorCode, detail: detail ? ` ${detail}` : "" };
+    return { errorCode, detailCode, detail: detail ? ` ${detail}` : "" };
   } catch {
-    return { errorCode: undefined, detail: "" };
+    return { errorCode: undefined, detailCode: undefined, detail: "" };
   }
 }
 
@@ -197,6 +203,7 @@ export class LcuCustomLobbyProvider {
     const rejection = await describeRejection(response);
     const error = lcuError(`LCU 请求被拒绝（${method} ${pathname}，HTTP ${status}）${rejection.detail}`, { status });
     error.errorCode = rejection.errorCode;
+    error.detailCode = rejection.detailCode;
     throw error;
   }
 
@@ -250,6 +257,7 @@ export class LcuCustomLobbyProvider {
         // Rejections mean this specific room is not joinable; remember it and move on.
         const rejection = lcuError(error.message, { status, skip: status > 0 && status < 500 });
         rejection.errorCode = error?.errorCode;
+        rejection.detailCode = error?.detailCode;
         throw rejection;
       }
     }

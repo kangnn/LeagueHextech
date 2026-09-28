@@ -431,20 +431,59 @@ async function main() {
     overlap.toastTop >= overlap.titleBottom, JSON.stringify(overlap));
   await shoot("05-notice-stack");
 
-  // The log reads like a console: newest at the bottom, the view following it down. A short log has
-  // nothing to scroll, so the honest assertion is "sits at the maximum scroll position".
+  // The log reads like a console with the newest line on top and the view pinned to it. A short log
+  // has nothing to scroll, so the honest assertion is "sits at the top" - the earlier wording
+  // ("appends at the bottom, scrolls to the bottom") still passed by accident, because a log shorter
+  // than its panel has scrollTop 0 and a maximum of 0.
   const logScroll = await evaluate(`(() => {
     const el = document.getElementById('log');
     return {
       count: el.children.length,
       top: el.scrollTop,
-      max: Math.max(0, el.scrollHeight - el.clientHeight),
+      first: el.firstElementChild?.querySelector('.msg')?.textContent ?? '',
+      last: el.lastElementChild?.querySelector('.msg')?.textContent ?? '',
     };
   })()`);
-  check("日志新行追加在底部并自动滚到底",
-    logScroll.count > 0 && logScroll.top === logScroll.max,
-    JSON.stringify(logScroll));
+  check("日志新行插在最上面并保持滚到顶",
+    logScroll.count > 0 && logScroll.top === 0, JSON.stringify(logScroll));
 
+  // A scrolled-down log must not leave its last line half cut: the panel itself has to stay inside
+  // the window. It did not - the 38px titlebar sat above a `height: 100vh` app column, so the bottom
+  // of the page fell outside the viewport and `overflow: hidden` on the body made it unreachable.
+  const layout = await evaluate(`(() => {
+    const el = document.getElementById('log');
+    // Distinct player counts, or the renderer folds the identical lines into one ×N row and there is
+    // nothing to scroll.
+    for (let i = 0; i < 60; i += 1) {
+      window.searcher.__emit({
+        type: 'skipped',
+        message: '房间与当前客户端的版本不一致，无法加入（INVALID_GAME_VERSION），已暂时跳过',
+        lobby: { id: 'b0cad431-1111-2222-3333-444444444444', playerCount: i % 10, maxHumanPlayers: 10, inviteCount: 3 },
+      });
+    }
+    el.scrollTop = el.scrollHeight;
+    const panel = el.getBoundingClientRect();
+    const last = el.lastElementChild.getBoundingClientRect();
+    return {
+      viewportH: window.innerHeight,
+      bodyScrollH: document.body.scrollHeight,
+      appBottom: document.querySelector('.app').getBoundingClientRect().bottom,
+      panelBottom: panel.bottom,
+      panelHeight: panel.height,
+      scrollTop: el.scrollTop,
+      max: Math.max(0, el.scrollHeight - el.clientHeight),
+      lastLineBottom: last.bottom,
+      rows: el.children.length,
+    };
+  })()`);
+  check("日志面板底部留在窗口内（标题栏不再把整页顶出可视区）",
+    layout.rows >= 60 && layout.appBottom <= layout.viewportH + 1 && layout.panelBottom <= layout.viewportH + 1,
+    JSON.stringify(layout));
+  check("日志滚到最下方时最后一行完整可见",
+    layout.scrollTop === layout.max && layout.lastLineBottom <= layout.panelBottom + 1,
+    JSON.stringify(layout));
+  await shoot("05c-log-scroll");
+  await evaluate(`document.getElementById('clearLog').onclick()`);
   await evaluate("document.getElementById('toasts').replaceChildren()");
 
   /* ---------- 7. 状态能在失败与成功之间来回切换 ---------- */

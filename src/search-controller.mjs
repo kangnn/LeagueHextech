@@ -37,6 +37,65 @@ function describeReason(reason) {
   return REASON_LABELS[reason] ?? String(reason);
 }
 
+/**
+ * How the client's join-rejection codes are reported, and whether the room is worth retrying.
+ * A code the user has never seen before used to land in the log as the raw LCU line - method, path,
+ * status, wrapper code - which buries the one word that explains the refusal.
+ *
+ *   park: "long"  the cause does not clear by waiting (a spent invitation record, a party with no
+ *                 seat left, a role/team-state conflict), so the room sits out the long cooldown;
+ *   park: "short" the cause is tied to the room's own state and may clear on its own;
+ *   no park       the client is simply busy with the previous operation, so the next sweep is fine.
+ */
+const SKIP_RULES = Object.freeze({
+  PARTY_INVITE_LIMIT: {
+    reason: "invite-limit",
+    park: "long",
+    message: "邀请名额已满（上限 50），无法加入"
+  },
+  PARTY_SIZE_LIMIT: {
+    reason: "not-joinable",
+    park: "long",
+    message: "房间人数已满，无法加入"
+  },
+  INVALID_ROLE_TRANSITION: {
+    reason: "not-joinable",
+    park: "long",
+    message: "房间不接受当前加入状态（角色冲突），已暂时跳过；若多个房间均如此，重启客户端后再试"
+  },
+  INVALID_GAME_VERSION: {
+    reason: "not-joinable",
+    park: "short",
+    message: "房间与当前客户端的版本不一致，无法加入（INVALID_GAME_VERSION），已暂时跳过"
+  },
+  INVALID_WHILE_PARTY_IN_ACTION: {
+    reason: "not-joinable",
+    park: undefined,
+    message: "客户端正忙（上一步操作还没完成），稍后自动重试"
+  }
+});
+
+/**
+ * The code that explains an LCU rejection. `errorCode` is only the wrapper the client puts around
+ * it ("RPC_ERROR"), so the body message the provider kept aside is matched as well - and the raw
+ * message is matched too, because a build that reports the code only in the text must not regress
+ * to a guess.
+ */
+function rejectionCode(error) {
+  const blob = `${error?.errorCode ?? ""} ${error?.detailCode ?? ""} ${error?.message ?? ""}`
+    .toUpperCase();
+  return Object.keys(SKIP_RULES).find((code) => blob.includes(code));
+}
+
+/**
+ * A rejection with no rule of its own still deserves a sentence: the code is the answer, and the
+ * request line it arrived in is diagnostic detail for a bug report, not something to show instead.
+ */
+function describeRejection(error) {
+  const code = error?.detailCode ?? error?.errorCode;
+  return code ? `客户端拒绝了这次加入（${code}），已跳过` : describe(error);
+}
+
 export class SearchController {
   #running = false;
   #timer = undefined;
@@ -87,6 +146,10 @@ export class SearchController {
   // A room the user was already sitting in when the search started. It is watched under the same rules
   // as a joined one, but never left automatically, because the tool did not put the user there.
   #adoptedRoom = false;
+  // Distinct rooms whose join was refused with INVALID_GAME_VERSION, and whether that cluster has
+  // already been reported. One mismatched room is the room's problem; several are the client's.
+  #versionMismatchRooms = new Set();
+  #versionMismatchWarned = false;
 
   constructor(provider, {
     policy = DEFAULT_POLICY,
@@ -230,6 +293,8 @@ export class SearchController {
     this.#adoptedRoom = false;
     this.#watchDelayMs = 0;
     this.#lastError = undefined;
+    this.#versionMismatchRooms.clear();
+    this.#versionMismatchWarned = false;
     // The connection readout in the UI keys off this, so a new session must not inherit the old one.
     this.#lastRefreshAt = undefined;
     this.#abort = new AbortController();
@@ -463,37 +528,18 @@ export class SearchController {
             this.#rejectedThisSweep.add(String(candidate.lobby.id));
             // The client reports rejections as errorCode "RPC_ERROR" with the meaningful code in
             // the message body, so matching the code field alone never fired - every rejection
-            // showed the raw HTTP line instead of an explanation.
-            const blob = `${error?.errorCode ?? ""} ${error?.message ?? ""}`.toUpperCase();
-            const inviteLimit = blob.includes("PARTY_INVITE_LIMIT");
-            // PARTY_SIZE_LIMIT means the party behind the listing has no seat left, however many
-            // slots the browser snapshot still claims to show. Waiting cannot make seats appear
-            // on a 3-second cadence, so these rooms are parked for the same long cooldown as
-            // invite-limit ones instead of burning a join attempt on every sweep.
-            // INVALID_ROLE_TRANSITION is the room refusing the joiner over a role/team-state
-            // conflict; it does not clear by retrying seconds later either, so the same parking
-            // applies - the user's log showed the identical room hammered every sweep without a
-            // single different outcome.
-            const roleConflict = blob.includes("INVALID_ROLE_TRANSITION");
-            if (inviteLimit || blob.includes("PARTY_SIZE_LIMIT") || roleConflict) {
-              this.#rememberExhausted(candidate.lobby, this.inviteLimitCooldownMs);
-            }
-            // INVALID_WHILE_PARTY_IN_ACTION is the client mid-transition (a leave or join that has
-            // not fully settled), so the room itself is fine and the next sweep simply succeeds.
-            const partyBusy = blob.includes("INVALID_WHILE_PARTY_IN_ACTION");
+            // showed the raw HTTP line instead of an explanation. The rules table carries the
+            // explanation and the parking decision for each code the log has seen so far.
+            const code = rejectionCode(error);
+            const rule = SKIP_RULES[code];
+            if (rule?.park === "long") this.#rememberExhausted(candidate.lobby, this.inviteLimitCooldownMs);
+            else if (rule?.park === "short") this.#rememberExhausted(candidate.lobby);
+            if (code === "INVALID_GAME_VERSION") this.#noteVersionMismatch(candidate.lobby);
             this.#emit({
               type: "skipped",
               lobby: candidate.lobby,
-              reason: inviteLimit ? "invite-limit" : "not-joinable",
-              message: inviteLimit
-                ? "邀请名额已满（上限 50），无法加入"
-                : partyBusy
-                  ? "客户端正忙（上一步操作还没完成），稍后自动重试"
-                  : blob.includes("PARTY_SIZE_LIMIT")
-                    ? "房间人数已满，无法加入"
-                    : roleConflict
-                      ? "房间不接受当前加入状态（角色冲突），已暂时跳过；若多个房间均如此，重启客户端后再试"
-                      : describe(error),
+              reason: rule?.reason ?? "not-joinable",
+              message: rule?.message ?? describeRejection(error),
               selectedSummary: summarizeLobby(candidate.lobby)
             });
             continue;
@@ -509,6 +555,10 @@ export class SearchController {
           this.#selected = current;
           this.#delayMs = this.intervalMs;
           this.#watchJoined = true;
+          // Getting into a room proves this client is usable, so a later cluster of version
+          // mismatches is news again instead of something the log has already dismissed.
+          this.#versionMismatchRooms.clear();
+          this.#versionMismatchWarned = false;
           // Progress is counted from the join, so a room that is still small only gets a stall timeout.
           this.#watchPlayerCount = Number(current.playerCount) || 0;
           this.#watchProgressAt = this.clock();
@@ -700,6 +750,22 @@ export class SearchController {
     this.#watchDeadlineAt = this.#belowFloor && this.stallTimeoutMs > 0
       ? this.#watchProgressAt + this.stallTimeoutMs
       : undefined;
+  }
+
+  /**
+   * Counts rooms refused for a version mismatch and states the fact once, when the count stops
+   * being about one room: a single mismatched party is the room's problem, while several are this
+   * client being out of step with the patch - which the per-room line cannot say. It stays a
+   * statement: which side is behind, and what to do about it, is the user's to judge.
+   */
+  #noteVersionMismatch(lobby) {
+    this.#versionMismatchRooms.add(String(lobby.id));
+    if (this.#versionMismatchWarned || this.#versionMismatchRooms.size < 3) return;
+    this.#versionMismatchWarned = true;
+    this.#emit({
+      type: "warning",
+      message: `当前客户端版本与房间不一致：已有 ${this.#versionMismatchRooms.size} 个房间因此拒绝加入`
+    });
   }
 
   /**

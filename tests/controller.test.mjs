@@ -104,6 +104,8 @@ await provider.joinLobby("p2").then(() => check("join rejection carries an error
   // The real client reports errorCode "RPC_ERROR" with the meaningful code in the message body;
   // shaping the double after the real payload is what exposed the matcher that never fired.
   check("join rejection carries the limit code in its message", error.message.includes("PARTY_INVITE_LIMIT"), String(error.message));
+  check("the actionable code is kept aside, not just wrapped in the sentence",
+    error.detailCode === "PARTY_INVITE_LIMIT", String(error.detailCode));
 });
 
 const events = [];
@@ -250,6 +252,70 @@ check("an acceptable adopted room is accepted as the result",
 check("an adopted room above the floor is not put on a clock",
   adoptedOk.controller.status().belowFloor === false, String(adoptedOk.controller.status().belowFloor));
 adoptedOk.controller.stop();
+
+/* ---------- a version mismatch is explained, parked, and called out as a cluster once ---------- */
+// The log used to show the refusal itself: "LCU 请求被拒绝（POST /lol-lobby/v2/party/…/join，HTTP 400）
+// RPC_ERROR：INVALID_GAME_VERSION". The code is the whole message, so it is translated, the room is
+// set aside for a while instead of being hammered every sweep, and three *different* rooms refusing
+// the same way is reported once as "your own client is the one out of date" - something a per-room
+// line cannot say.
+function rejectionHarness(code) {
+  const events = [];
+  const joins = {};
+  const provider = {
+    async listLobbies() { return ["room-a", "room-b", "room-c"].map((id, i) => normalize(row(id, i + 1))); },
+    async refreshLobbyList() {},
+    async joinLobby(id) {
+      joins[id] = (joins[id] ?? 0) + 1;
+      const error = new Error(`LCU 请求被拒绝（POST /lol-lobby/v2/party/${id}/join，HTTP 400） RPC_ERROR：${code}`);
+      error.status = 400;
+      error.skip = true;
+      error.errorCode = "RPC_ERROR";
+      error.detailCode = code;
+      throw error;
+    },
+    async currentLobby() { return undefined; },
+    async leaveLobby() {}
+  };
+  const controller = new SearchController(provider, {
+    policy, emit: (event) => events.push(event),
+    intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10, watchIntervalFloorMs: 0,
+    attemptGapMs: 0, refreshThrottleMs: 0, exhaustedCooldownMs: 60_000, inviteLimitCooldownMs: 60_000, stallTimeoutMs: 400
+  });
+  return { controller, events, joins };
+}
+
+const mismatch = rejectionHarness("INVALID_GAME_VERSION");
+await mismatch.controller.start();
+await sleep(250);
+const mismatchSkips = mismatch.events.filter((e) => e.type === "skipped");
+check("a version mismatch is explained instead of dumping the HTTP line",
+  mismatchSkips.length >= 3 && mismatchSkips.every((e) => e.message.includes("房间与当前客户端的版本不一致")),
+  JSON.stringify(mismatchSkips.map((e) => e.message)));
+check("the raw request line is gone from the log",
+  mismatch.events.every((e) => !String(e.message).includes("POST /lol-lobby")),
+  JSON.stringify(mismatch.events.map((e) => e.message)));
+check("three different rooms refusing the same way is called out once",
+  mismatch.events.filter((e) => e.type === "warning" && e.message === "当前客户端版本与房间不一致：已有 3 个房间因此拒绝加入").length === 1,
+  JSON.stringify(mismatch.events.filter((e) => e.type === "warning").map((e) => e.message)));
+const mismatchAttempts = JSON.stringify(mismatch.joins);
+await sleep(300);
+check("mismatched rooms are parked, not retried every sweep",
+  JSON.stringify(mismatch.joins) === mismatchAttempts,
+  `${mismatchAttempts} -> ${JSON.stringify(mismatch.joins)}`);
+check("the cluster notice is not repeated on every sweep",
+  mismatch.events.filter((e) => e.type === "warning").length === 1,
+  String(mismatch.events.filter((e) => e.type === "warning").length));
+mismatch.controller.stop();
+
+// A code this build has never seen must still read as a sentence.
+const unknownCode = rejectionHarness("SOME_FUTURE_CODE");
+await unknownCode.controller.start();
+await sleep(250);
+check("an unrecognised rejection code is still a sentence, not a request dump",
+  unknownCode.events.some((e) => e.type === "skipped" && e.message === "客户端拒绝了这次加入（SOME_FUTURE_CODE），已跳过"),
+  JSON.stringify(unknownCode.events.filter((e) => e.type === "skipped").map((e) => e.message)));
+unknownCode.controller.stop();
 
 /* ---------- legacy settings migration ---------- */
 const { SettingsStore } = await import(root + "settings.mjs");
