@@ -435,6 +435,11 @@ check("a probe in flight raises no banner",
   document.getElementById("toasts").children.map((row) => row.textContent).join(" | "));
 check("the connection light pulses while the probe is in flight",
   document.getElementById("client").classList.contains("probing"));
+// The pill is a question while it probes, not an answer: the old verdict's text has to leave with
+// its colour, or a pulsing "未检测到客户端" reads as a result that already came back.
+check("the pill asks instead of answering while probing",
+  document.getElementById("clientText").textContent === "检测中…",
+  document.getElementById("clientText").textContent);
 releaseDiagnose();
 await pendingDiagnose;
 check("the busy state is released and the glyph survives it",
@@ -450,6 +455,17 @@ check("the pulse stops once the probe answers",
   !document.getElementById("client").classList.contains("probing"));
 check("the verdict is written on the connection pill",
   document.getElementById("clientText").textContent === "已连接客户端",
+  document.getElementById("clientText").textContent);
+
+// A probe whose bridge call dies must not pin "检测中…" on the pill forever.
+let failDiagnose;
+globalThis.window.searcher.diagnose = () => new Promise((_, reject) => { failDiagnose = () => reject(new Error("桥断了")); });
+const failingProbe = diagnoseButton.onclick();
+failDiagnose();
+await failingProbe;
+check("a probe that died falls back to the neutral reading",
+  document.getElementById("clientText").textContent === "未检测到客户端" &&
+  !document.getElementById("client").classList.contains("probing"),
   document.getElementById("clientText").textContent);
 check("the verdict stays out of the event log",
   log.children.every((line) => line.querySelector(".msg")?.textContent?.includes("已连接") !== true),

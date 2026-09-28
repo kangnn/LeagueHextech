@@ -183,6 +183,7 @@ async function main() {
       glyph: btn.textContent,
       glyphSpinning: getComputedStyle(btn.querySelector('.glyph')).animationName !== 'none',
       pillProbing: pill.classList.contains('probing'),
+      pillText: document.getElementById('clientText').textContent,
       banners: [...document.getElementById('toasts').children].map(r => r.textContent),
     };
     await click;
@@ -206,6 +207,7 @@ async function main() {
     `glyph=${fast.mid.glyph} before=${fast.glyphBefore} spinning=${fast.mid.glyphSpinning}`);
   check("按钮被锁定", fast.mid.disabled === true && fast.mid.busy === "1");
   check("指示灯进入探测态", fast.mid.pillProbing === true);
+  check("探测中指示灯文字同步变为「检测中…」", fast.mid.pillText === "检测中…", fast.mid.pillText);
   check("探测中不弹横幅（先在按钮上转圈）", fast.mid.banners.length === fast.before, JSON.stringify(fast.mid.banners));
   check("指示灯给出结论", fast.after.pill === "未检测到客户端", fast.after.pill);
   check("结论也升起一条横幅", fast.after.banners.some((t) => t.includes("未检测到")), JSON.stringify(fast.after.banners));
@@ -215,7 +217,9 @@ async function main() {
   // Screenshot the pill *while* the probe is in flight. The bridge's slow scene gives a 800ms window,
   // which is the only way to actually see the pulse state on a real frame.
   await evaluate(`window.postMessage({scene:'slow'}, '*')`);
-  await evaluate(`document.getElementById('diagnose').onclick()`);
+  // Kick the click off without awaiting it: evaluate resolves promises, and awaiting the onclick
+  // promise here would wait out the whole 800ms probe and shoot the finished state, not in-flight.
+  await evaluate(`(async () => { document.getElementById('diagnose').onclick(); })()`);
   await wait(120);
   await shoot("01-probe-inflight");
   await wait(200);

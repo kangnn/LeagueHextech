@@ -587,8 +587,10 @@ function beginProbe() {
   activeProbes += 1;
   clientPill.classList.add("probing");
   // The verdict from last time is no longer known to be true, so it is dropped rather than left on
-  // screen: pulse-while-green claimed a state the probe was in the middle of re-checking.
+  // screen: pulse-while-green claimed a state the probe was in the middle of re-checking. The text
+  // goes with it - a pill pulsing over "未检测到客户端" still reads as a verdict, not a question.
   delete clientPill.dataset.state;
+  clientText.textContent = "检测中…";
   return activeProbes;
 }
 
@@ -597,6 +599,9 @@ function endProbe(token) {
   if (token !== activeProbes) return;
   activeProbes = 0;
   clientPill.classList.remove("probing");
+  // A probe that died before its verdict landed (the bridge threw) must not leave "检测中…" pinned
+  // on screen; the neutral reading is the same one the startup grace period settles on.
+  if (!clientPill.dataset.state) clientText.textContent = "未检测到客户端";
 }
 
 /** The connection light is the slowest thing on screen and an outlier: it is dimmed in and given a
