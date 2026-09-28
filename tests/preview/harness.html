@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>LeagueHextech 渲染层预览（假桥）</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0b0e; }
+  #frame { display: block; width: 1100px; height: 700px; border: 0; background: #101014; }
+  #bar { font: 12px/1.6 ui-monospace, Consolas, monospace; color: #9aa; background: #15151a; padding: 6px 10px; border-bottom: 1px solid #2a2a32; }
+  #bar b { color: #7fd4e8; font-weight: 600; }
+  #bar button { font: inherit; margin-left: 6px; background: #23232b; color: #ccd; border: 1px solid #3a3a44; border-radius: 4px; padding: 2px 7px; cursor: pointer; }
+  #bar button:hover { background: #2e2e38; }
+</style>
+</head>
+<body>
+<div id="bar">
+  预览：<b>真实 index.html</b> + 注入的可控假桥 ·
+  场景
+  <button data-scene="fast">快速探测（无客户端）</button>
+  <button data-scene="slow">慢探测（800ms）</button>
+  <button data-scene="connected">探测成功</button>
+  <button data-scene="slow-update">慢检查更新</button>
+</div>
+<iframe id="frame" src="./app.html"></iframe>
+<script>
+  // The buttons above drive the iframe's fake bridge through postMessage, so each scenario can be
+  // replayed in a fresh state without reloading the whole harness by hand.
+  for (const button of document.querySelectorAll("[data-scene]")) {
+    button.onclick = () => {
+      document.getElementById("frame").contentWindow.postMessage({ scene: button.dataset.scene }, "*");
+    };
+  }
+</script>
+</body>
+</html>

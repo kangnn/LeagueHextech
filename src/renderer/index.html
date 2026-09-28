@@ -31,6 +31,12 @@
     --bad: #e8736a;
     --bad-dim: rgba(232, 115, 106, .14);
     --mute-dim: rgba(255, 255, 255, .07);
+    /* Notice fills are the kind tints pre-composited onto the surface, i.e. opaque. The stack folds
+       rows on top of each other, and a translucent fill would let the covered rows' text bleed
+       through the front card - the fold reads as a smear of overlapping sentences. */
+    --toast-info-bg: color-mix(in srgb, var(--accent) 16%, var(--surface));
+    --toast-ok-bg: color-mix(in srgb, var(--ok) 14%, var(--surface));
+    --toast-bad-bg: color-mix(in srgb, var(--bad) 14%, var(--surface));
   }
   * { box-sizing: border-box; }
   /* Explicit scrollbars: the default Chromium bar is far heavier than this UI. */
@@ -59,6 +65,19 @@
   .tb-sep { width: 1px; height: 16px; background: var(--line-strong); margin: 0 6px; }
   .tool { width: 30px; height: 26px; padding: 0; font-size: 14px; line-height: 1; background: transparent; border: none; color: var(--muted); font-weight: 400; }
   .tool:hover { color: var(--text-body); background: var(--surface-2); }
+  /* Toolbar buttons are glyphs, not words, so they cannot swap their label for a verb phrase without
+     the button lurching in width. Instead each glyph moves the way its own meaning suggests:
+       ⟳ is a cycle arrow, so rotating it reads as "it is running again";
+       ⇩ is a download arrow, so rotating it would throw the direction away and turn it into a
+         generic spinner. It dips downward instead - the direction is the whole point of the icon. */
+  .tool.working { opacity: 1; }
+  .tool[data-busy="spin"].working .glyph { display: inline-block; animation: icon-spin .8s linear infinite; }
+  .tool[data-busy="dip"].working .glyph { display: inline-block; animation: icon-dip 1s ease-in-out infinite; }
+  @keyframes icon-spin { to { transform: rotate(360deg); } }
+  @keyframes icon-dip {
+    0%, 100% { transform: translateY(-1.5px); opacity: .5; }
+    50%      { transform: translateY(1.5px);  opacity: 1; }
+  }
   .wbtn { width: 40px; height: 26px; padding: 0; background: transparent; border: none; color: var(--muted); font-size: 12px; }
   .wbtn:hover { background: var(--surface-2); color: var(--text-body); }
   .wbtn.wclose:hover { background: #e81123; color: #fff; }
@@ -69,8 +88,10 @@
   h1 .cn { margin-left: 9px; font-size: 13px; font-weight: 400; color: var(--muted); }
   h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: .3px; }
   h1::after { content: ""; display: block; width: 42px; height: 2px; margin-top: 7px; border-radius: 1px; background: linear-gradient(90deg, var(--gold), rgba(200, 170, 110, 0)); }
-  .pill { display: inline-flex; align-items: center; gap: 7px; flex: none; padding: 5px 11px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-2); font-size: 12.5px; color: var(--muted); white-space: nowrap; }
-  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+  .pill { position: relative; display: inline-flex; align-items: center; gap: 7px; flex: none; padding: 5px 11px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-2); font-size: 12.5px; color: var(--muted); white-space: nowrap; transition: color .18s, border-color .18s; }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; transition: background .18s, box-shadow .18s; }
+  .pill.flash { animation: flash-ring .6s ease-out; }
+  @keyframes flash-ring { from { box-shadow: 0 0 0 0 var(--accent-dim); } to { box-shadow: 0 0 0 9px transparent; } }
   .pill[data-state="on"] { color: var(--ok); border-color: rgba(95, 208, 138, .35); }
   .pill[data-state="on"] .dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-dim); }
   .pill[data-state="off"] { color: var(--bad); border-color: rgba(232, 115, 106, .35); }
@@ -78,6 +99,11 @@
   .pill[data-state="warn"] { color: var(--warn); border-color: rgba(240, 184, 73, .35); }
   .pill[data-state="warn"] .dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-dim); }
   .pill[data-state="busy"] .dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+  /* Kept last on purpose: it has to beat every [data-state] colour above, so a re-check does not sit
+     there pulsing the previous verdict's red or green while it is deciding. */
+  .pill.probing { color: var(--muted); border-color: var(--line-strong); }
+  .pill.probing .dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); animation: probe-pulse .9s ease-in-out infinite; }
+  @keyframes probe-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
 
   /* ---------- state + actions ---------- */
   #state { font-size: 20px; font-weight: 600; margin: 16px 0 12px; display: flex; align-items: center; gap: 9px; }
@@ -97,6 +123,13 @@
   button.ghost { background: transparent; border: 1px solid var(--line-strong); color: var(--muted); font-weight: 400; }
   button.ghost:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
   button:disabled { opacity: .4; cursor: default; }
+  /* A button that is working says so on itself: the label swaps for the verb phrase and a spinner
+     rides at the front. Nothing appears at the top of the window for a click that answers in a
+     couple of hundred milliseconds - the notice layer is reserved for genuinely slow work. */
+  button.working, button.working:disabled { opacity: 1; cursor: progress; }
+  button.working.busy-loud { opacity: .82; }
+  button .spin { flex: none; width: 11px; height: 11px; margin-right: 7px; border-radius: 50%; vertical-align: -1px; display: inline-block; border: 1.6px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; opacity: .9; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ---------- stat tiles ---------- */
   .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 16px 0 12px; }
@@ -183,32 +216,30 @@
   /* Notices drop in as banners at the top centre of the window (the CC Switch layout) and stack
      downward. Newest on top, older ones scroll behind: a burst of the same message reads as one
      banner with a count instead of a pile of rows. */
-  #toasts { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 90; width: max-content; max-width: min(560px, calc(100vw - 40px)); }
-  #toasts.collapsed { max-height: 172px; overflow: hidden; }
-  .toast { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-width: 260px; overflow: hidden; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; color: var(--text-body); padding: 10px 14px 11px; font-size: 12.5px; box-shadow: 0 6px 22px rgba(0, 0, 0, .5); animation: toast-in .2s cubic-bezier(.2, .9, .3, 1.2); }
-  .toast .badge { flex: none; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #0b1220; background: var(--accent); }
-  .toast.ok .badge { background: #4ade80; }
-  .toast.bad .badge { background: #f87171; }
-  .toast .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .toast.leaving { animation: toast-out .28s ease-in forwards; }
-  .toast.head { padding-right: 10px; }
-  .toast .count { flex: none; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 9px; padding: 0 7px; font-size: 11px; color: var(--muted); }
-  .toast .chev { flex: none; color: var(--muted); font-size: 10px; cursor: pointer; padding: 2px 4px; transition: transform .15s; }
-  .toast.expanded .chev { transform: rotate(90deg); }
-  .toast .rest { display: none; width: 100%; padding: 7px 14px 10px; margin-top: 1px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; max-height: 132px; overflow-y: auto; }
-  .toast.expanded { flex-wrap: wrap; }
-  .toast.expanded .rest { display: block; }
-  .toast .rest .when { display: inline-block; min-width: 62px; opacity: .8; }
-  .toast .rest .stamp + .stamp { margin-top: 3px; }
-  /* The bar drains over exactly the toast's lifetime, so a notice never blinks out mid-read;
-     hovering (or expanding) holds it. */
-  .toast .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--accent); transform-origin: left center; opacity: .8; }
-  .toast.ok .bar { background: #4ade80; }
-  .toast.bad .bar { background: #f87171; }
-  .toast:hover .bar, .toast.expanded .bar { animation-play-state: paused; }
-  @keyframes toast-in { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
-  @keyframes toast-out { to { opacity: 0; transform: translateY(-14px); } }
-  @keyframes toast-bar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+  /* Notices are banners at the top centre of the window, styled after the sonner conventions that
+     CC Switch uses: 16px of padding, an 8px radius, a light shadow, an inline icon and a quiet
+     0.4s slide. No progress bar and no counter - a notice is a sentence that appears and leaves.
+     Cleared of the 38px titlebar so it cannot sit on the window buttons and eat their clicks. */
+  #toasts { position: fixed; top: 46px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; z-index: 90; width: max-content; max-width: min(420px, calc(100vw - 40px)); pointer-events: none; }
+  /* Coloured card, not a dark panel with a stripe down the side: the whole row is tinted by kind and
+     the text carries the same hue, which is what CC Switch shows on screen. The row wraps instead of
+     truncating - a failure that ends in "..." has hidden the one sentence the user needed (-:
+     that is the opposite of a notice. The icon stays top-aligned so a wrapped row does not float it. */
+  .toast { position: relative; display: flex; align-items: flex-start; gap: 8px; width: max-content; max-width: 100%; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; color: var(--text); padding: 12px 16px; font-size: 14px; line-height: 1.5; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, .3), 0 4px 6px -4px rgba(0, 0, 0, .3); animation: toast-in .4s cubic-bezier(.22, 1, .36, 1); pointer-events: auto; cursor: default; transition: margin-top .25s ease; }
+  /* CC Switch stacks its notices like a deck: every row but the newest slides up behind the one in
+     front and only its bottom edge peeks out, and resting the pointer on the stack deals the rows
+     back out. This is sonner's signature interaction, and it is why the newest row must carry the
+     highest z-index - the fold happens in DOM order, but the cover has to be the newest. */
+  .toast + .toast { margin-top: -34px; }
+  #toasts:hover .toast + .toast, #toasts:focus-within .toast + .toast { margin-top: 8px; }
+  .toast .badge { flex: none; width: 16px; height: 16px; display: grid; place-items: center; font-size: 13px; font-weight: 700; line-height: 1; margin-top: 1px; }
+  .toast .text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .toast.info { background: var(--toast-info-bg); border-color: var(--accent-line); color: var(--accent); }
+  .toast.ok { background: var(--toast-ok-bg); border-color: rgba(95, 208, 138, .4); color: var(--ok); }
+  .toast.bad { background: var(--toast-bad-bg); border-color: rgba(232, 115, 106, .4); color: var(--bad); }
+  .toast.leaving { animation: toast-out .4s ease-in forwards; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(-16px); } to { opacity: 1; transform: none; } }
+  @keyframes toast-out { to { opacity: 0; transform: translateY(-16px); } }
   .tip { position: fixed; width: 280px; background: var(--surface); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 10px; color: var(--text-body); font-size: 12px; line-height: 1.55; z-index: 60; pointer-events: none; }
   .theme-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 1px solid var(--line-strong); }
   #themeMenu { position: fixed; top: 40px; right: 128px; width: 172px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 4px; z-index: 70; }
@@ -235,8 +266,8 @@
   <span class="tb-title">LeagueHextech</span>
   <span class="tb-spacer"></span>
   <span class="tb-version" id="topVersion"></span>
-  <button id="diagnose" class="tool" type="button" title="重新检测 League Client 连接">⟳</button>
-  <button id="checkUpdate" class="tool" type="button" title="检查是否有新版本">⇩</button>
+  <button id="diagnose" class="tool" type="button" data-busy="spin" title="重新检测 League Client 连接"><span class="glyph">⟳</span></button>
+  <button id="checkUpdate" class="tool" type="button" data-busy="dip" title="检查是否有新版本"><span class="glyph">⇩</span></button>
   <span class="tb-sep"></span>
   <button id="themeBtn" class="tool" type="button" title="主题配色">
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -372,142 +403,75 @@ function updateSummary(state) {
   }
 }
 
-// Transient feedback pops in the corner, stacks, and folds away on its own. Only states that need an
-// action (a download in flight, an update ready to install) earn a persistent row.
+// A notice is one sentence with an icon, at the top centre of the window. This follows sonner, the
+// toast library CC Switch uses: there is no progress bar, no repeat counter and no expandable
+// history. A row appears, is read, and leaves. Anything that would need a counter is a message that
+// should have been worded once, and anything that would need an expand arrow belongs in the log.
 //
-// Two behaviours matter more than the animation:
-// - An identical message repeated (a user clicking "重新检测" over and over, or the same error coming
-//   back from every sweep) is folded into the notice already on screen with a "N 次" badge, instead
-//   of being swallowed as a duplicate. Silently dropping it made the app look frozen.
-// - Every notice carries a draining progress bar that is the toast's own countdown, so the row never
-//   blinks out mid-sentence. The bar is the same clock the removal timer uses, so they cannot drift.
-const TOAST_DEDUPE_MS = 8000; // an identical message inside this window folds into the live notice
-const TOAST_COLLAPSE_LIMIT = 4; // more than this many rows and the container starts folding
-const TOAST_LIFETIME_MS = { info: 6000, ok: 6000, bad: 10000 };
-
-/** Newest notice per message text, kept only while it is on screen. */
-const liveToasts = new Map();
-
-function collapseToasts(force) {
-  const box = $("toasts");
-  const rows = [...box.querySelectorAll(".toast:not(.leaving)")];
-  const overflow = rows.length > TOAST_COLLAPSE_LIMIT;
-  box.classList.toggle("collapsed", force ?? overflow);
-  if (!overflow) for (const row of rows) row.classList.remove("expanded");
-}
-
-/** Pauses the countdown while the pointer rests on the notice, so it can actually be read. */
-function holdToast(item, held) {
-  item.querySelector(".bar")?.style.setProperty("animation-play-state", held ? "paused" : "running");
-  item.dataset.held = held ? "1" : "";
-}
+// Multiple rows fold like a deck - every row but the newest hides behind the one in front, only its
+// bottom edge peeking out, and resting the pointer on the stack deals the rows back out. That fold
+// is CSS (`.toast + .toast`); the JS only has to keep the newest row winning the paint order.
+//
+// The only two knobs are how long a row stays and whether it stays at all. The lifetime is CC
+// Switch's own: its Toaster passes duration: 2000 for every kind, and resting the pointer on the
+// stack pauses every clock. `sticky` hands the lifetime to the caller instead, for a row that
+// reports an ongoing job (a download in flight, an update waiting for an answer) that must not
+// vanish while it is still true.
+const TOAST_LIFETIME_MS = { info: 2000, ok: 2000, bad: 2000 };
+let toastSerial = 0; // monotonic, so the newest row always has the highest z-index
 
 function dismissToast(item, immediate) {
   if (item.dataset.gone) return;
   item.dataset.gone = "1";
   clearTimeout(Number(item.dataset.timer));
-  const key = item.dataset.key;
-  if (key && liveToasts.get(key) === item) liveToasts.delete(key);
-  if (immediate) { item.remove(); collapseToasts(); return; }
+  if (immediate) { item.remove(); return; }
   item.classList.add("leaving");
-  setTimeout(() => { item.remove(); collapseToasts(); }, 320);
+  // Matches the toast-out animation so the node is not yanked out mid-fade.
+  setTimeout(() => item.remove(), 400);
 }
 
 function restartToastTimer(item, kind) {
-  const life = TOAST_LIFETIME_MS[kind] ?? TOAST_LIFETIME_MS.info;
-  const bar = item.querySelector(".bar");
-  if (bar) {
-    bar.style.animation = "none";
-    void bar.offsetWidth; // reflow: re-running an animation needs the old one flushed first
-    bar.style.animation = `toast-bar ${life}ms linear forwards`;
-    holdToast(item, item.dataset.held === "1");
-  }
   clearTimeout(Number(item.dataset.timer));
+  // A sticky row reports an ongoing job; its lifetime belongs to the caller and no hover may hand
+  // it a countdown it never had.
+  if (item.dataset.sticky) return;
+  const life = TOAST_LIFETIME_MS[kind] ?? TOAST_LIFETIME_MS.info;
   item.dataset.timer = String(setTimeout(() => dismissToast(item, false), life));
 }
 
-/** Repeats turn the banner into a "N 次" summary row whose history can be unfolded. */
-function promoteToast(item) {
-  const text = item.querySelector(".text")?.textContent ?? item.textContent;
-  const kind = item.dataset.kind ?? "info";
-  const rest = document.createElement("div");
-  rest.className = "rest";
-  const count = document.createElement("span");
-  count.className = "count";
-  const chev = document.createElement("span");
-  chev.className = "chev";
-  chev.textContent = "▶";
-  // Built fresh rather than moved: reusing the existing children means detaching and re-appending
-  // them, and a notice that is mid-animation does not survive that round trip cleanly.
-  item.className = `toast head ${kind}`;
-  item.textContent = "";
+// The pointer resting anywhere on the stack pauses every row's clock, and leaving resumes them all.
+// The fold makes this the only sane granularity: the hover that expands the deck is also the hover
+// that reads it, and rows vanishing underneath the reader would fold the deck mid-sentence.
+function pauseToastTimers() {
+  for (const row of $("toasts").children) clearTimeout(Number(row.dataset.timer));
+}
+function resumeToastTimers() {
+  for (const row of $("toasts").children) restartToastTimer(row, row.dataset.kind ?? "info");
+}
+
+/** @returns {{dismiss: (immediate?: boolean) => void}} a handle so a sticky row can be closed early. */
+function toast(message, kind = "info", { sticky = false } = {}) {
+  const text = String(message);
+  const item = document.createElement("div");
+  item.className = `toast ${kind}`;
+  item.dataset.kind = kind;
+  if (sticky) item.dataset.sticky = "1";
   const badge = document.createElement("span");
   badge.className = "badge";
   badge.textContent = kind === "ok" ? "✓" : kind === "bad" ? "!" : "i";
   const label = document.createElement("span");
   label.className = "text";
   label.textContent = text;
-  item.append(badge, label, count, chev, rest);
-  const toggle = (event) => {
-    event.stopPropagation();
-    const open = !item.classList.contains("expanded");
-    item.classList.toggle("expanded", open);
-    collapseToasts(open ? false : undefined);
-    holdToast(item, open || item.matches(":hover"));
-  };
-  chev.onclick = toggle;
-  return rest;
-}
-
-function toast(message, kind = "info", { sticky = false } = {}) {
-  const text = String(message);
-  const box = $("toasts");
-  const now = Date.now();
-  let item = liveToasts.get(text);
-  const seenHere = item?.isConnected && now - Number(item.dataset.born || 0) < TOAST_DEDUPE_MS;
-  let rest;
-  if (seenHere) {
-    // Same sentence again (the user hammering "重新检测"): keep ONE banner and count it, rather than
-    // swallowing the repeat - a click that produces no visible change reads as a frozen app.
-    rest = item.querySelector(".rest") ?? promoteToast(item);
-    const times = Number(item.dataset.times || 1) + 1;
-    item.dataset.times = String(times);
-    item.querySelector(".count").textContent = `${times} 次`;
-    if (!sticky) restartToastTimer(item, kind);
-  } else {
-    item = document.createElement("div");
-    item.className = `toast ${kind}`;
-    item.dataset.born = String(now);
-    item.dataset.times = "1";
-    item.dataset.kind = kind;
-    item.dataset.key = text;
-    const badge = document.createElement("span");
-    badge.className = "badge";
-    badge.textContent = kind === "ok" ? "✓" : kind === "bad" ? "!" : "i";
-    const label = document.createElement("span");
-    label.className = "text";
-    label.textContent = text;
-    const bar = document.createElement("div");
-    bar.className = "bar";
-    item.append(badge, label, bar);
-    item.onmouseenter = () => holdToast(item, true);
-    item.onmouseleave = () => holdToast(item, item.classList.contains("expanded"));
-    item.onclick = () => dismissToast(item, false);
-    box.prepend(item);
-    liveToasts.set(text, item);
-    if (sticky) holdToast(item, true); // no countdown: the caller decides when it goes away
-    else restartToastTimer(item, kind);
-  }
-  if (rest) {
-    const stamp = document.createElement("div");
-    stamp.className = "stamp";
-    const when = document.createElement("span");
-    when.className = "when";
-    when.textContent = new Date(now).toLocaleTimeString("zh-CN", { hour12: false });
-    stamp.append(when);
-    rest.append(stamp);
-  }
-  collapseToasts();
+  item.append(badge, label);
+  item.onclick = () => dismissToast(item, false);
+  // Newest on top of the stack, literally: the fold hides every older row behind the newest one, so
+  // the newest has to win the paint order or the fold would cover the wrong card.
+  item.style.zIndex = String(toastSerial += 1);
+  // Newest first, and never more than a few rows: a notice stack taller than the window is a log.
+  $("toasts").prepend(item);
+  const rows = $("toasts").children;
+  while (rows.length > 3) dismissToast(rows[rows.length - 1], true);
+  if (!sticky) restartToastTimer(item, kind);
   return { dismiss: (immediate) => dismissToast(item, immediate) };
 }
 
@@ -525,8 +489,11 @@ function renderUpdate(state) {
   $("updateText").textContent = sticky ? updateSummary(state) : "";
   $("installUpdate").hidden = state?.status !== "ready";
   $("updatePromptRow").hidden = !prompt;
-  $("updatePromptText").textContent = prompt ? `发现新版本 v${state.version}，是否更新？` : "";
-  promptedUpdateVersion = prompt ? String(state.version ?? "") : promptedUpdateVersion;
+  // Guarded because this text goes straight to the user: an update state that arrives without a
+  // version would otherwise render as "发现新版本 vundefined，是否更新？".
+  const promptVersion = state?.version ?? "";
+  $("updatePromptText").textContent = prompt && promptVersion ? `发现新版本 v${promptVersion}，是否更新？` : "";
+  promptedUpdateVersion = prompt ? String(promptVersion) : promptedUpdateVersion;
   if (!silent) {
     // "checking" is not an outcome: the button that started the check already shows a "正在检查更新…"
     // notice, and letting the state render its own row here produced the same sentence twice.
@@ -611,11 +578,62 @@ function floorChips(status) {
   return chips;
 }
 
-function renderClientStatus(status) {
+// A probe can be triggered from the button, from the automatic sweep, or by a room action hitting a
+// dropped connection - they can overlap, and the light must not stop pulsing until the last one is
+// done. Hence a counter rather than a boolean.
+let activeProbes = 0;
+
+function beginProbe() {
+  activeProbes += 1;
+  clientPill.classList.add("probing");
+  // The verdict from last time is no longer known to be true, so it is dropped rather than left on
+  // screen: pulse-while-green claimed a state the probe was in the middle of re-checking.
+  delete clientPill.dataset.state;
+  return activeProbes;
+}
+
+function endProbe(token) {
+  // Guarded so a probe that started later keeps the pulse alive when an earlier one finishes.
+  if (token !== activeProbes) return;
+  activeProbes = 0;
+  clientPill.classList.remove("probing");
+}
+
+/** The connection light is the slowest thing on screen and an outlier: it is dimmed in and given a
+    5-second grace period before its first real reading, so probing does not flash red at startup. */
+let clientStatusGraceUntil = Date.now() + 5000;
+let clientStatusTimer;
+
+function scheduleClientStatus() {
+  clearTimeout(clientStatusTimer);
+  clientStatusTimer = setTimeout(() => renderClientStatus(null), clientStatusGraceUntil - Date.now() + 20);
+}
+
+function renderClientStatus(status, { flash = false } = {}) {
   if (!status?.checkedAt) {
-    clientPill.dataset.state = "busy";
-    clientText.textContent = "检测中…";
+    // Grace period: we have not finished the first probe yet, so claim nothing rather than the
+    // alarming "no client". The label reads as "still working on it", which is the truth.
+    if (Date.now() < clientStatusGraceUntil) {
+      clientPill.classList.add("probing");
+      clientPill.dataset.state = "busy";
+      clientText.textContent = "检测中…";
+      scheduleClientStatus();
+      return;
+    }
+    clientPill.classList.remove("probing");
+    clientPill.dataset.state = "off";
+    clientText.textContent = "未检测到客户端";
+    clientPill.title = "请先启动英雄联盟客户端并登录到大厅，然后点「检测客户端」";
     return;
+  }
+  clientPill.classList.remove("probing");
+  clearTimeout(clientStatusTimer); // a real reading ends the grace period, whatever is left of it
+  clientStatusGraceUntil = 0;
+  if (flash) {
+    // Restart the ring animation on every verdict, including two identical ones in a row.
+    clientPill.classList.remove("flash");
+    void clientPill.offsetWidth;
+    clientPill.classList.add("flash");
   }
   if (status.connected) {
     clientPill.dataset.state = "on";
@@ -754,19 +772,23 @@ function append(event) {
   const collapsible = event.type !== "configured";
   if (collapsible && key === lastKey && logLines.length > 0) {
     repeats += 1;
-    const counter = logLines[0].querySelector(".x");
+    const counter = logLines[logLines.length - 1].querySelector(".x");
     counter.hidden = false;
     counter.textContent = `×${repeats + 1}`;
     return;
   }
   repeats = 0;
   lastKey = key;
+  // The panel reads like a console: newest at the bottom, view following it. The notice stack sits
+  // over the panel's top edge, so a newest-first log would put every fresh line exactly where the
+  // toasts land - and following the tail also means the reader never loses their place.
+  const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const line = buildLine(event);
-  logLines.unshift(line);
-  log.prepend(line);
+  logLines.push(line);
+  log.append(line);
   // The buffer is bounded, so a search that runs all night cannot grow the panel or the DOM.
-  if (logLines.length > LOG_LIMIT) logLines.pop().remove();
-  log.scrollTop = 0;
+  if (logLines.length > LOG_LIMIT) logLines.shift().remove();
+  if (stick) log.scrollTop = log.scrollHeight;
   refreshLog();
 }
 
@@ -781,63 +803,130 @@ clearLogButton.onclick = () => {
   refreshLog();
 };
 
-/**
- * Every action button goes through this: it locks for the duration of the call and says so in the
- * notice layer. Without it a click that takes a second (leaving a room, probing the client) looked
- * like a dead button, and a double click queued two of the same action.
- */
-async function withButtonBusy(button, busyText, run, { kind = "info" } = {}) {
-  if (button.dataset.busy) return undefined;
-  button.dataset.busy = "1";
+// A click has to look like it landed on the first frame, and a click that takes half a second has to
+// say so. But a click that answers in 150ms must NOT flash "working" - and above all it must not
+// raise a banner at the top of the window, which is what made the old version feel so abrupt: the
+// banner had not even finished animating in before the result pushed it aside.
+//
+// So the button carries the in-flight state itself (`working` class + a spinner), and only work that
+// actually takes a while escalates to the notice layer - and it does so *late*, after LOUD_AFTER_MS
+// with the call still outstanding, so the banner never appears for a hiccup.
+//
+// Two shapes of button need two ways of saying "working":
+//   - a wide text button (「开始搜索」) swaps its label for the verb phrase and wears a spinner;
+//   - a toolbar glyph button (⟳ ⇩) cannot take a phrase without lurching in width, so it spins in
+//     place and keeps its glyph.
+const BUSY_SETTLE_MS = 160; // hold "working" at least this long once shown, so it reads as deliberate
+const LOUD_AFTER_MS = 350; // past this, the wait is long enough to deserve a banner
+let spinnerSerial = 0;
+
+function startSpinner(button, text) {
+  const token = `s${++spinnerSerial}`;
+  button.dataset.spin = token;
+  if (button.querySelector(".glyph")) return token; // glyph buttons spin via CSS, nothing to swap
+  button.textContent = "";
+  const ring = document.createElement("span");
+  ring.className = "spin";
+  button.append(ring, text);
+  return token;
+}
+
+async function withButtonBusy(button, busyText, run, { loudText = "" } = {}) {
+  if (button.dataset.working) return undefined; // a second click is part of the first, not a second call
+  button.dataset.working = "1";
+  // Remembered once, before any spinner touches it. Read from the saved copy rather than from the
+  // DOM on each call: the DOM text is whatever the last spinner left behind, and that is not a label.
+  if (button.dataset.restingLabel === undefined) {
+    button.dataset.restingLabel = button.textContent;
+    button.dataset.restingTitle = button.title;
+  }
+  const glyphButton = Boolean(button.querySelector(".glyph"));
+  const resting = button.dataset.restingLabel;
   button.disabled = true;
+  button.classList.add("working");
+  const token = busyText ? startSpinner(button, busyText) : "";
+  if (busyText) button.title = busyText;
   const started = Date.now();
-  const pending = busyText ? toast(busyText, kind, { sticky: true }) : undefined;
+  let loud;
+  // Escalation is what "loudText" asks for and it is deliberately lazy: for the first LOUD_AFTER_MS a
+  // quick call gets no banner, only the spinner on the button that was clicked.
+  const escalator = loudText
+    ? setTimeout(() => {
+        if (button.dataset.spin !== token) return; // already finished; nothing to escalate
+        loud = toast(loudText, "info", { sticky: true });
+        button.classList.add("busy-loud");
+      }, LOUD_AFTER_MS)
+    : undefined;
   try {
     return await run();
   } catch (error) {
     append({ type: "error", message: error?.message ?? String(error) });
     return undefined;
   } finally {
-    // A call that answered instantly should not flash its "working" notice; a short minimum makes
-    // the sequence read as action -> result rather than as a flicker.
+    clearTimeout(escalator);
+    if (loud) loud.dismiss(true);
+    // A call that answered instantly must not flash the spinner; holding it briefly keeps the
+    // sequence reading as "pressed -> working -> done" instead of a stutter.
     const shownFor = Date.now() - started;
-    if (pending) {
-      if (shownFor < 400) await new Promise((resolve) => setTimeout(resolve, 400 - shownFor));
-      pending.dismiss(true);
+    if (busyText && button.dataset.spin === token) {
+      if (shownFor < BUSY_SETTLE_MS) await new Promise((resolve) => setTimeout(resolve, BUSY_SETTLE_MS - shownFor));
+      // A glyph button never lost its markup, so there is nothing to put back.
+      if (!glyphButton && button.dataset.spin === token) button.textContent = resting;
     }
-    button.dataset.busy = "";
+    button.dataset.spin = "";
+    button.title = button.dataset.restingTitle ?? "";
+    button.classList.remove("working", "busy-loud");
+    delete button.dataset.working;
     button.disabled = false;
   }
 }
 
 startButton.onclick = async () => {
-  const status = await withButtonBusy(startButton, "正在启动搜索…", () => window.searcher.start());
+  const status = await withButtonBusy(startButton, "正在启动搜索…", () => window.searcher.start(), { loudText: "正在启动搜索…" });
   if (status) render(status);
 };
 stopButton.onclick = () => withButtonBusy(stopButton, "正在停止…", async () => render(await window.searcher.stop()));
-leaveButton.onclick = () => withButtonBusy(leaveButton, "正在离开房间…", async () => render(await window.searcher.leave()));
+leaveButton.onclick = () => withButtonBusy(leaveButton, "正在离开房间…", async () => render(await window.searcher.leave()), { loudText: "正在离开房间…" });
 restartButton.onclick = async () => {
   const status = await withButtonBusy(restartButton, "正在重新搜索…", () => window.searcher.restart());
   if (status) render(status);
 };
 
-$("diagnose").onclick = () => withButtonBusy($("diagnose"), "正在检测客户端…", async () => {
-  const result = await window.searcher.diagnose();
-  // Only the human-readable verdict is worth a notice; the path candidates and pid list behind it
-  // are noise for a normal user - they live in the hover details of the client status pill.
-  renderClientStatus(result.ok
-    ? { connected: true, source: result.source, port: result.port }
-    : { connected: false, hasClient: result.hasClient, message: result.message, attempts: result.attempts });
-  toast(result.ok
-    ? `已连接：来源 ${SOURCES[result.source] ?? result.source}，端口 ${result.port}`
-    : result.message, result.ok ? "ok" : "bad");
-});
+// Probing the client is the fastest thing in the app - it usually lands in well under 200ms. It says
+// so on the button and on the connection light, and then answers in a banner: the pill can only show
+// a colour, whereas the verdict also needs to name the source and the port it was found on.
+// The pulse starts synchronously with the click so the very first frame already reads as "working".
+$("diagnose").onclick = () => {
+  const probe = beginProbe();
+  return withButtonBusy($("diagnose"), "正在检测…", async () => {
+    try {
+      const result = await window.searcher.diagnose();
+      // Only the human-readable verdict is worth showing; the path candidates and pid list behind it
+      // are noise for a normal user - they live in the hover details of the client status pill.
+      renderClientStatus({
+        checkedAt: Date.now(),
+        connected: Boolean(result.ok),
+        hasClient: result.hasClient,
+        source: result.source,
+        port: result.port,
+        message: result.message,
+        attempts: result.attempts,
+      }, { flash: true });
+      // The row wraps rather than truncating, so the whole sentence fits and there is nothing to
+      // shorten. It is the same copy the pill's tooltip carries.
+      const where = result.ok && result.source ? `（来源 ${SOURCES[result.source] ?? result.source}${result.port ? `，端口 ${result.port}` : ""}）` : "";
+      toast(result.ok ? `已连接 League Client${where}` : result.message ?? "未检测到客户端", result.ok ? "ok" : "bad");
+    } finally {
+      endProbe(probe);
+    }
+  });
+};
 
 $("checkUpdate").onclick = async () => {
-  // Pressing this used to look like nothing happened for as long as the network round trip took,
-  // then a result appeared - the lag itself read as a hang. The button locks and a notice says what
-  // is happening from the first frame, then the answer replaces it.
-  const status = await withButtonBusy($("checkUpdate"), "正在检查更新…", () => window.searcher.checkUpdate());
+  // The one button that genuinely takes a while: a GitHub round trip. It gets the spinner like the
+  // rest, and because the wait outlasts LOUD_AFTER_MS it also earns a banner saying what is happening -
+  // that banner arriving late is exactly what makes it feel natural rather than abrupt.
+  const status = await withButtonBusy($("checkUpdate"), "正在检查更新…", () => window.searcher.checkUpdate(), { loudText: "正在检查更新…" });
   if (status) renderUpdate(status, { immediate: true });
 };
 
@@ -1119,6 +1208,16 @@ window.searcher.onEvent((event) => {
   render(event);
   append(event);
 });
+
+// The narrow buttons (「停止」 is two characters) cannot spell their verb phrase in place, so the hover
+// title carries it. Set from the markup, before any spinner ever runs.
+$("stop").title = "正在停止";
+$("restart").title = "离开当前房间并立即重新搜索";
+
+// enter/leave do not bubble, but they do fire on ancestors of the hit-tested child, so these see the
+// pointer even though the container itself is pointer-events:none.
+$("toasts").onmouseenter = pauseToastTimers;
+$("toasts").onmouseleave = resumeToastTimers;
 
 renderClientStatus(await window.searcher.clientStatus());
 renderUpdate(await window.searcher.updateStatus());

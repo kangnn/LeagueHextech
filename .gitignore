@@ -13,3 +13,7 @@ release/
 
 # scratch file written by the renderer test while it executes the inline script
 tests/.extract.mjs
+
+# preview harness output: app.html is generated from src/renderer/index.html, shots are local runs
+tests/preview/app.html
+tests/preview/shots/

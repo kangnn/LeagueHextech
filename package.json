@@ -22,7 +22,9 @@
     "build:installer": "electron-builder --win --publish never",
     "build:portable": "node scripts/build-portable.mjs",
     "icon": "node scripts/make-tray-icon.mjs --preview pictures/tray-icon.png",
-    "test:stats": "node tests/stats.test.mjs"
+    "test:stats": "node tests/stats.test.mjs",
+    "preview": "node tests/preview/build-preview.mjs && node tests/preview/serve.mjs",
+    "test:ui": "node tests/preview/build-preview.mjs && node tests/preview/shoot.mjs"
   },
   "keywords": [
     "league-of-legends",
