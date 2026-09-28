@@ -310,10 +310,13 @@ async function main() {
   check("超过阈值后才升起横幅",
     upd.late.banners.some((t) => t.includes("正在检查更新")), JSON.stringify(upd.late));
   // The result banner is *supposed* to be there; what must be gone is the in-flight one, or the two
-  // would stack exactly the way the client probe used to.
+  // would stack exactly the way the client probe used to. Exactly ONE result banner: the verdict
+  // arrives both as the invoke()'s return value and as a published event, and toasting from both is
+  // how one click ended up showing "已是最新版本" twice.
+  const resultBanners = upd.endBanners.filter((t) => t.includes("已是最新版本")).length;
   check("结果到达后「正在检查」的横幅撤走",
     !upd.endBanners.some((t) => t.includes("正在检查更新")) &&
-    upd.endBanners.some((t) => t.includes("已是最新版本")),
+    resultBanners === 1,
     JSON.stringify(upd.endBanners));
 
   await evaluate(`window.postMessage({scene:'slow-update'}, '*')`);

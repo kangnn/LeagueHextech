@@ -57,9 +57,17 @@ const bridge = `<script>
       if (scene === "slow") return delayed(800, { ok: false, hasClient: false, message: "未检测到游戏客户端：请先启动英雄联盟客户端并登录到大厅，然后点「重新检测」。" })();
       return delayed(150, { ok: false, hasClient: false, message: "未检测到游戏客户端：请先启动英雄联盟客户端并登录到大厅，然后点「重新检测」。" })();
     },
+    // Mirrors the real main process: the verdict is not only the invoke()'s return value - it is
+    // ALSO published as an "update" event, and that event is what the renderer toasts from. The
+    // return value exists for parity with updates:status; nothing in the UI may act on it twice.
     checkUpdate: () => {
-      if (scene === "slow-update") return delayed(1300, { supported: true, status: "uptodate", currentVersion: "0.1.5" })();
-      return async () => ({ supported: true, status: "uptodate", currentVersion: "0.1.5" })();
+      const result = { supported: true, status: "uptodate", currentVersion: "0.1.5" };
+      const run = async () => {
+        await wait(scene === "slow-update" ? 1300 : 150);
+        for (const fn of listeners) fn({ type: "update", ...result });
+        return result;
+      };
+      return run();
     }
   };
 

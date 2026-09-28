@@ -344,6 +344,9 @@ check("a manual check that finds nothing pops a transient toast",
   document.getElementById("updateRow").hidden === true &&
   document.getElementById("toasts").children[0]?.textContent.includes("已是最新版本"),
   document.getElementById("toasts").children[0]?.textContent);
+check("the manual verdict also lands in the log carrying the same sentence",
+  log.children.at(-1).querySelector(".msg")?.textContent === "已是最新版本（v0.1.2）",
+  log.children.at(-1).querySelector(".msg")?.textContent);
 
 fire({ type: "update", supported: true, status: "error", message: "网络不可达" });
 check("an update failure is reported as a toast rather than swallowed",
@@ -377,6 +380,24 @@ fire({ type: "update", supported: false, status: "idle" });
 check("a build with no updater shows no update row", updateRow.hidden === true);
 check("the install action is gone once there is nothing to install", document.getElementById("installUpdate").hidden === true);
 
+/* ---------- the automatic check stays quiet on screen but leaves a trace in the log ---------- */
+// A background check that finds nothing new is silent by design - no banner - but the user who
+// waits out the 20-second timer must be able to tell the check ran, so one muted line lands in the
+// log. The skip bookkeeping (a silent "available") is not a check at all and logs nothing.
+const toastsBeforeAuto = document.getElementById("toasts").children.length;
+const logLinesBeforeAuto = log.children.length;
+fire({ type: "update", supported: true, status: "uptodate", currentVersion: "0.1.2", notice: "silent" });
+check("an automatic check that finds nothing raises no banner",
+  document.getElementById("toasts").children.length === toastsBeforeAuto,
+  document.getElementById("toasts").children.map((row) => row.textContent).join(" | "));
+check("but it leaves one quiet line in the log",
+  log.children.length === logLinesBeforeAuto + 1 &&
+  log.children.at(-1).querySelector(".msg")?.textContent === "自动检查：已是最新版本（v0.1.2）",
+  log.children.at(-1).querySelector(".msg")?.textContent);
+fire({ type: "update", supported: true, status: "available", version: "0.1.3", notice: "silent" });
+check("the skip bookkeeping event logs nothing at all",
+  log.children.length === logLinesBeforeAuto + 1, String(log.children.length));
+
 /* ---------- an automatic check asks instead of downloading ---------- */
 const toastsBeforePrompt = document.getElementById("toasts").children.length;
 const logLinesBeforePrompt = log.children.length;
@@ -399,11 +420,12 @@ check("accepting the ask hides it and hands over to the download flow",
 
 fire({ type: "update", supported: true, status: "available", version: "0.1.3", notice: "prompt" });
 fire({ type: "update", supported: true, status: "uptodate", currentVersion: "0.1.1", notice: "silent" });
-check("a silent background result clears the ask and says nothing anywhere",
+check("a silent background result clears the ask, raises no banner, and leaves one log line",
   document.getElementById("updatePromptRow").hidden === true &&
   document.getElementById("toasts").children.length === toastsBeforePrompt &&
-  log.children.length === logLinesBeforePrompt,
-  `toasts=${document.getElementById("toasts").children.length} log=${log.children.length}`);
+  log.children.length === logLinesBeforePrompt + 1 &&
+  log.children.at(-1).querySelector(".msg")?.textContent === "自动检查：已是最新版本（v0.1.1）",
+  `toasts=${document.getElementById("toasts").children.length} log=${log.children.length} msg=${log.children.at(-1).querySelector(".msg")?.textContent}`);
 
 fire({ type: "update", supported: true, status: "available", version: "0.1.3", notice: "prompt" });
 await document.getElementById("skipUpdate").onclick();
@@ -480,8 +502,15 @@ check("a second click while one is in flight is ignored instead of queued",
   diagnoseCalls === 1, String(diagnoseCalls));
 
 /* ---------- slow work still escalates to a banner, but only once it proves slow ---------- */
+// The stub mirrors the real main process: the answer resolves the invoke() AND is published as an
+// "update" event, and only the event may toast - toasting from both showed every result twice.
 let releaseUpdate;
-globalThis.window.searcher.checkUpdate = () => new Promise((resolve) => { releaseUpdate = () => resolve({ supported: true, status: "uptodate", currentVersion: "0.1.2" }); });
+globalThis.window.searcher.checkUpdate = () => new Promise((resolve) => {
+  releaseUpdate = () => {
+    fire({ type: "update", supported: true, status: "uptodate", currentVersion: "0.1.2" });
+    resolve({ supported: true, status: "uptodate", currentVersion: "0.1.2" });
+  };
+});
 const updateButton = document.getElementById("checkUpdate");
 const pendingUpdate = updateButton.onclick();
 check("slow work starts on the button, not in a banner",
@@ -495,6 +524,9 @@ releaseUpdate();
 await pendingUpdate;
 check("the escalated banner is withdrawn as soon as the answer arrives",
   document.getElementById("toasts").children.some((row) => row.querySelector(".text")?.textContent === "正在检查更新…") === false,
+  document.getElementById("toasts").children.map((row) => row.textContent).join(" | "));
+check("one check raises exactly one result banner - the event's, not the return value's",
+  document.getElementById("toasts").children.filter((row) => row.querySelector(".text")?.textContent?.includes("已是最新版本")).length === 1,
   document.getElementById("toasts").children.map((row) => row.textContent).join(" | "));
 
 rmSync(scriptPath, { force: true });

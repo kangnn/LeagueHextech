@@ -927,13 +927,15 @@ $("diagnose").onclick = () => {
   });
 };
 
-$("checkUpdate").onclick = async () => {
+$("checkUpdate").onclick = () =>
   // The one button that genuinely takes a while: a GitHub round trip. It gets the spinner like the
   // rest, and because the wait outlasts LOUD_AFTER_MS it also earns a banner saying what is happening -
   // that banner arriving late is exactly what makes it feel natural rather than abrupt.
-  const status = await withButtonBusy($("checkUpdate"), "正在检查更新…", () => window.searcher.checkUpdate(), { loudText: "正在检查更新…" });
-  if (status) renderUpdate(status, { immediate: true });
-};
+  // The verdict itself is NOT rendered from this return value: the main process publishes the same
+  // state as an "update" event (the channel every background check uses too), and that event is what
+  // raises the result banner. Rendering the return value here as well put two identical banners on
+  // screen for one click.
+  withButtonBusy($("checkUpdate"), "正在检查更新…", () => window.searcher.checkUpdate(), { loudText: "正在检查更新…" });
 
 // The about dialog reads the live version from the updater state; the channel is derived from the
 // version shape, the same rule the updater itself uses to pick its feed file.
@@ -1194,9 +1196,14 @@ window.searcher.onEvent((event) => {
     // Only outcomes earn a log line: a downloaded update, "already current" after a manual check,
     // or a failure. "checking", download ticks and "available" (covered by the ask row or the
     // download toast) are transient - logging the start is what made one check show up twice.
-    // A "silent" event is a background check with nothing to say: no toast, no log line at all.
+    // A "silent" event is a background check with nothing to say: no toast. But it still leaves one
+    // muted line below, so a user who waited out the automatic check can tell it ran - the bare
+    // silence was indistinguishable from the check never happening.
     const outcome = event.status === "ready" || event.status === "uptodate" || event.status === "error";
-    if (outcome && event.notice !== "silent") append(event);
+    if (outcome && event.notice !== "silent") append({ ...event, message: updateSummary(event) });
+    if (event.status === "uptodate" && event.notice === "silent") {
+      append({ ...event, message: `自动检查：${updateSummary(event)}` });
+    }
     return;
   }
   if (event.type === "client-status") {
