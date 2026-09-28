@@ -16,23 +16,38 @@ const { discoverLcuConnection } = await import(root + "lcu-discovery.mjs");
 const env = { LEAGUE_INSTALL_PATH: undefined, ProgramFiles: "Z:\\nonexistent", "ProgramFiles(x86)": "Z:\\nonexistent" };
 
 let failures = 0;
-const check = async (name, fn) => {
-  try { await fn(); console.log("PASS", name); }
-  catch (error) { failures += 1; console.log("FAIL", name, "-", error.message); }
+// Every check is collected and awaited before the verdict is printed. An async check that is merely
+// fired off lets the run reach `process.exit` while assertions are still pending, which reports
+// success without having verified anything.
+const pending = [];
+const check = (name, fn) => {
+  pending.push((async () => {
+    try { await fn(); console.log("PASS", name); }
+    catch (error) { failures += 1; console.log("FAIL", name, "-", error.message); }
+  })());
 };
 
 check("no client process means not connected, and no connection source is even consulted", async () => {
-  let consulted = false;
-  const error = await discoverLcuConnection({
-    env,
-    // A reader that would "find" parameters must never be reached when the process probe says none.
-    listPids: async () => { consulted = true; return []; }
-  }).then(() => null, (e) => e);
-  assert.ok(error, "expected a rejection");
-  assert.equal(error.hasClient, false);
-  assert.ok(error.fatal);
-  assert.ok(!consulted, "stale sources (client log / lockfile) must not be read without a live process");
-  assert.ok(error.message.includes("未检测到"), error.message);
+  // A leftover client log that still holds a perfectly usable port and token is the trap: with no
+  // LeagueClientUx process alive those parameters are dead, and trusting them is what made the
+  // status indicator claim "已连接客户端" on a machine with the game closed.
+  const dir = await mkdtemp(path.join(tmpdir(), "lcu-nopid-"));
+  try {
+    const clientDir = path.join(dir, "LeagueClient");
+    await mkdir(clientDir, { recursive: true });
+    await writeFile(path.join(clientDir, "1_2_789_LeagueClientUx.log"),
+      "--app-pid=789 --app-port=1234 --remoting-auth-token=staleTok", "utf8");
+    const error = await discoverLcuConnection({
+      env: { ...env, LEAGUE_INSTALL_PATH: dir },
+      listPids: async () => []
+    }).then(() => null, (e) => e);
+    assert.ok(error, "a stale log must never be used while no client process is running");
+    assert.equal(error.hasClient, false);
+    assert.ok(error.fatal);
+    assert.ok(error.message.includes("未检测到"), error.message);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 check("a live process that yields no parameters is a different, reported-as-such failure", async () => {
@@ -42,7 +57,25 @@ check("a live process that yields no parameters is a different, reported-as-such
   }).then(() => null, (e) => e);
   assert.ok(error, "expected a rejection");
   assert.equal(error.hasClient, true);
-  assert.ok(error.message.includes("无法获取连接参数"), error.message);
+  assert.ok(error.message.includes("读不到连接参数"), error.message);
+});
+
+check("failure messages stay human: no install paths or pid lists leak into the visible text", async () => {
+  const cases = [
+    { listPids: async () => [] },
+    { listPids: async () => [4242] }
+  ];
+  for (const overrides of cases) {
+    const error = await discoverLcuConnection({ env, ...overrides }).then(() => null, (e) => e);
+    assert.ok(error, "expected a rejection");
+    // The message is what a buyer reads in the error row and in a toast: it must be one sentence of
+    // advice. Paths, pids and reader failures belong in `attempts`, shown only on hover.
+    assert.ok(!/Program Files/.test(error.message), `paths leaked: ${error.message}`);
+    assert.ok(!/LeagueClientUx\.exe/.test(error.message), `process name leaked: ${error.message}`);
+    assert.ok(!/PID/.test(error.message), `pid list leaked: ${error.message}`);
+    assert.ok(!/；/.test(error.message), `details joined into the message: ${error.message}`);
+    assert.ok(Array.isArray(error.attempts) && error.attempts.length > 0, "details must still be available");
+  }
 });
 
 check("a successful discovery is reused while the process list is unchanged, and recomputed when it changes", async () => {
@@ -76,5 +109,6 @@ check("a successful discovery is reused while the process list is unchanged, and
   }
 });
 
+await Promise.all(pending);
 console.log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

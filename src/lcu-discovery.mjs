@@ -240,7 +240,9 @@ export async function discoverLcuConnection({ env = process.env, listPids = list
   // LeagueAkari 的判定基准是活进程：没有任何 LeagueClientUx.exe 在跑时，残留的客户端日志和
   // lockfile 一律不可信——上一次会话的端口和令牌会让状态指示器谎报"已连接"。
   if (pids.length === 0) {
-    const error = new Error(`未检测到已登录的 League Client；请启动客户端后重试。${attempts.join("；")}`);
+    // 面向用户只说结论和该做什么；目录候选、进程列表这些排障细节留在 attempts 里，
+    // 只在悬停"详情"时出现——直接甩给用户一长串安装路径既看不懂也没用。
+    const error = new Error("未检测到游戏客户端：请先启动英雄联盟客户端并登录到大厅，然后点「重新检测」。");
     error.fatal = true;
     error.attempts = attempts;
     error.hasClient = false;
@@ -271,7 +273,7 @@ export async function discoverLcuConnection({ env = process.env, listPids = list
 
   // Reaching here means a client process exists but none of the three sources yielded parameters -
   // a different problem from "no client at all", with a different fix (permissions, admin rights).
-  const error = new Error(`已检测到 League Client 但无法获取连接参数。${attempts.join("；")}`);
+  const error = new Error("客户端已在运行，但读不到连接参数：请确认已登录到大厅，并以普通权限重试（不要管理员身份运行本软件）。");
   error.fatal = true;
   error.attempts = attempts;
   error.hasClient = true;

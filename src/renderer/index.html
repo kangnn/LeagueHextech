@@ -512,8 +512,13 @@ function render(status) {
 
   const errorRow = $("errorRow");
   errorRow.hidden = !status.lastError;
-  if (status.lastError) $("error").textContent = status.lastError;
-  if (status.diagnostics?.length) toast(status.diagnostics.join("；"), "ok");
+  if (status.lastError) {
+    $("error").textContent = status.lastError;
+    // 排障细节（安装目录候选、进程 PID…）不铺在界面上，悬停"最近错误"这一行才看得到。
+    $("error").title = (status.diagnostics ?? []).join("\n") || "";
+    errorRow.title = $("error").title;
+  }
+  // Diagnostics are troubleshooting detail (paths, pids) - never a toast, it only ever confused buyers.
   startButton.disabled = Boolean(status.running) || status.state === "joined";
   stopButton.disabled = !status.running && status.state !== "joined";
   leaveButton.disabled = status.state !== "joined";
@@ -637,9 +642,14 @@ restartButton.onclick = async () => {
 
 $("diagnose").onclick = async () => {
   const result = await window.searcher.diagnose();
+  // Only the human-readable verdict is worth a toast; the path candidates and pid list behind it
+  // are noise for a normal user - they live in the hover details of the client status pill.
+  renderClientStatus(result.ok
+    ? { connected: true, source: result.source, port: result.port }
+    : { connected: false, hasClient: result.hasClient, message: result.message, attempts: result.attempts });
   toast(result.ok
     ? `已连接：来源 ${SOURCES[result.source] ?? result.source}，端口 ${result.port}`
-    : `${result.message} ${(result.attempts ?? []).join("；")}`, result.ok ? "ok" : "bad");
+    : result.message, result.ok ? "ok" : "bad");
 };
 
 $("checkUpdate").onclick = async () => {

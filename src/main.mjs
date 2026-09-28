@@ -518,7 +518,13 @@ function start() {
       const status = await refreshClientStatus();
       return status.connected
         ? { ok: true, source: status.source, port: status.port, endpoint: status.detail, checkedAt: status.checkedAt }
-        : { ok: false, message: status.message, attempts: status.attempts, checkedAt: status.checkedAt };
+        : {
+          ok: false,
+          message: status.message,
+          hasClient: Boolean(status.hasClient),
+          attempts: status.attempts,
+          checkedAt: status.checkedAt
+        };
     });
     ipcMain.handle("settings:get", () => settings.settings);
     ipcMain.handle("settings:update", async (_event, partial) => {
