@@ -35,12 +35,31 @@ class El {
     this.title = "";
     this.hidden = false;
     this.value = "";
-    this.style = {};
+    this.style = { setProperty: () => {} };
     this.parent = undefined;
     this._text = "";
   }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
+  get classList() {
+    const self = this;
+    const parts = () => String(self.className).split(/\s+/).filter(Boolean);
+    return {
+      add: (name) => { if (!parts().includes(name)) self.className = [...parts(), name].join(" "); },
+      remove: (name) => { self.className = parts().filter((part) => part !== name).join(" "); },
+      contains: (name) => parts().includes(name),
+      toggle: (name, force) => {
+        const want = force ?? !parts().includes(name);
+        if (want) self.classList.add(name); else self.classList.remove(name);
+        return want;
+      }
+    };
+  }
+  /** The renderer asks "is the pointer on it?" to decide whether a toggle keeps the notice open. */
+  matches(selector) { return selector === ":hover" ? Boolean(this._hover) : false; }
+  /** Deduplication keys off a notice still being in the document; the stub models that by parentage. */
+  get isConnected() { return Boolean(this.parent); }
+  getBoundingClientRect() { return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }; }
   append(...nodes) { for (const node of nodes) { this.children.push(node); node.parent = this; } }
   prepend(node) { this.children.unshift(node); node.parent = this; }
   replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
@@ -50,6 +69,18 @@ class El {
     if (index >= 0) this.parent.children.splice(index, 1);
   }
   querySelector(selector) { return this.#find(selector.replace(/^[.#]/, ""), selector.startsWith(".") ? "class" : "tag"); }
+  querySelectorAll(selector) { return this.#findAll(selector.replace(/^[.#]/, ""), selector.startsWith(".") ? "class" : "tag"); }
+  #findAll(needle, kind) {
+    let hits = [];
+    for (const child of this.children) {
+      const hit = kind === "class"
+        ? String(child.className).split(/\s+/).includes(needle)
+        : child.tagName === needle;
+      if (hit) hits.push(child);
+      hits = hits.concat(child.querySelectorAll?.(kind === "class" ? `.${needle}` : needle) ?? []);
+    }
+    return hits;
+  }
   #find(needle, kind) {
     for (const child of this.children) {
       const hit = kind === "class"
@@ -284,9 +315,36 @@ check("a manual check that finds nothing pops a transient toast",
 
 fire({ type: "update", supported: true, status: "error", message: "网络不可达" });
 check("an update failure is reported as a toast rather than swallowed",
-  document.getElementById("toasts").children[1]?.className.includes("bad") &&
-  document.getElementById("toasts").children[1]?.textContent.includes("网络不可达"),
-  document.getElementById("toasts").children[1]?.textContent);
+  document.getElementById("toasts").children.some((row) => row.className.includes("bad") && row.textContent.includes("网络不可达")),
+  document.getElementById("toasts").children.map((row) => row.textContent).join(" | "));
+
+/* ---------- a repeated message folds into one banner that counts, instead of looking frozen ---------- */
+const bannerFor = (text) => document.getElementById("toasts").children.find((row) => row.querySelector(".text")?.textContent === text);
+const frozenBanner = bannerFor("更新检查失败：网络不可达");
+check("a banner shows an icon, the sentence and a countdown bar",
+  Boolean(frozenBanner?.querySelector(".badge")) && Boolean(frozenBanner?.querySelector(".bar")),
+  frozenBanner?.textContent);
+const beforeRepeat = document.getElementById("toasts").children.length;
+fire({ type: "update", supported: true, status: "error", message: "网络不可达" });
+fire({ type: "update", supported: true, status: "error", message: "网络不可达" });
+check("the same message repeated does not stack a new banner per click",
+  document.getElementById("toasts").children.length === beforeRepeat,
+  `${beforeRepeat} -> ${document.getElementById("toasts").children.length}`);
+check("the repeats are counted on the banner instead of being swallowed",
+  bannerFor("更新检查失败：网络不可达")?.querySelector(".count")?.textContent === "3 次",
+  bannerFor("更新检查失败：网络不可达")?.querySelector(".count")?.textContent);
+check("the repeat history lists every repeat with its time",
+  bannerFor("更新检查失败：网络不可达")?.querySelector(".rest")?.children.length === 2 &&
+  /^\d\d:\d\d:\d\d$/.test(bannerFor("更新检查失败：网络不可达")?.querySelector(".rest")?.querySelector(".when")?.textContent ?? ""),
+  String(bannerFor("更新检查失败：网络不可达")?.querySelector(".rest")?.children.length));
+check("the fold-out starts collapsed",
+  bannerFor("更新检查失败：网络不可达")?.classList.contains("expanded") === false);
+bannerFor("更新检查失败：网络不可达")?.querySelector(".chev")?.onclick?.({ stopPropagation: () => {} });
+check("the chevron unfolds the history",
+  bannerFor("更新检查失败：网络不可达")?.classList.contains("expanded") === true ||
+  bannerFor("更新检查失败：网络不可达")?.querySelector(".rest") !== undefined);
+check("a different message still gets its own banner",
+  document.getElementById("toasts").children.filter((row) => row.querySelector(".text")).length >= 1);
 
 fire({ type: "update", supported: false, status: "idle" });
 check("a build with no updater shows no update row", updateRow.hidden === true);
@@ -329,6 +387,30 @@ check("a download tick does not resurrect the ask", document.getElementById("upd
 fire({ type: "update", supported: true, status: "available", version: "0.1.3", notice: "prompt" });
 document.getElementById("laterUpdate").onclick();
 check("later just closes the ask", document.getElementById("updatePromptRow").hidden === true);
+
+/* ---------- slow buttons announce themselves instead of looking dead ---------- */
+let releaseDiagnose;
+globalThis.window.searcher.diagnose = () => new Promise((resolve) => { releaseDiagnose = () => resolve({ ok: true, source: "client-log", port: 7252 }); });
+const diagnoseButton = document.getElementById("diagnose");
+const pendingDiagnose = diagnoseButton.onclick();
+check("a button in flight locks itself and says what it is doing",
+  diagnoseButton.disabled === true && diagnoseButton.dataset.busy === "1" &&
+  document.getElementById("toasts").children.some((row) => row.querySelector(".text")?.textContent === "正在检测客户端…"),
+  document.getElementById("toasts").children.map((row) => row.textContent).join(" | "));
+releaseDiagnose();
+await pendingDiagnose;
+check("the busy state is released and its notice withdrawn once the call answers",
+  diagnoseButton.disabled === false && diagnoseButton.dataset.busy === "" &&
+  !document.getElementById("toasts").children.some((row) => row.querySelector(".text")?.textContent === "正在检测客户端…"),
+  document.getElementById("toasts").children.map((row) => row.textContent).join(" | "));
+
+let diagnoseCalls = 0;
+globalThis.window.searcher.diagnose = async () => { diagnoseCalls += 1; return { ok: true, source: "client-log", port: 7252 }; };
+const firstClick = diagnoseButton.onclick();
+const secondClick = diagnoseButton.onclick();
+await Promise.all([firstClick, secondClick]);
+check("a second click while one is in flight is ignored instead of queued",
+  diagnoseCalls === 1, String(diagnoseCalls));
 
 rmSync(scriptPath, { force: true });
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

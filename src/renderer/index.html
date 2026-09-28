@@ -180,10 +180,35 @@
   .line[data-tone="muted"] { border-left-color: var(--line); }
   .line[data-tone="muted"] .tag { color: var(--muted); background: var(--mute-dim); }
   .line[data-tone="muted"] .msg { color: var(--muted); }
-  #toasts { position: fixed; top: 46px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
-  .toast { background: var(--surface); border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); color: var(--text-body); padding: 8px 12px; border-radius: 6px; font-size: 12.5px; max-width: 420px; box-shadow: 0 4px 14px rgba(0, 0, 0, .45); }
-  .toast.ok { border-left-color: #4ade80; }
-  .toast.bad { border-left-color: #f87171; }
+  /* Notices drop in as banners at the top centre of the window (the CC Switch layout) and stack
+     downward. Newest on top, older ones scroll behind: a burst of the same message reads as one
+     banner with a count instead of a pile of rows. */
+  #toasts { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 90; width: max-content; max-width: min(560px, calc(100vw - 40px)); }
+  #toasts.collapsed { max-height: 172px; overflow: hidden; }
+  .toast { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-width: 260px; overflow: hidden; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; color: var(--text-body); padding: 10px 14px 11px; font-size: 12.5px; box-shadow: 0 6px 22px rgba(0, 0, 0, .5); animation: toast-in .2s cubic-bezier(.2, .9, .3, 1.2); }
+  .toast .badge { flex: none; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #0b1220; background: var(--accent); }
+  .toast.ok .badge { background: #4ade80; }
+  .toast.bad .badge { background: #f87171; }
+  .toast .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toast.leaving { animation: toast-out .28s ease-in forwards; }
+  .toast.head { padding-right: 10px; }
+  .toast .count { flex: none; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 9px; padding: 0 7px; font-size: 11px; color: var(--muted); }
+  .toast .chev { flex: none; color: var(--muted); font-size: 10px; cursor: pointer; padding: 2px 4px; transition: transform .15s; }
+  .toast.expanded .chev { transform: rotate(90deg); }
+  .toast .rest { display: none; width: 100%; padding: 7px 14px 10px; margin-top: 1px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; max-height: 132px; overflow-y: auto; }
+  .toast.expanded { flex-wrap: wrap; }
+  .toast.expanded .rest { display: block; }
+  .toast .rest .when { display: inline-block; min-width: 62px; opacity: .8; }
+  .toast .rest .stamp + .stamp { margin-top: 3px; }
+  /* The bar drains over exactly the toast's lifetime, so a notice never blinks out mid-read;
+     hovering (or expanding) holds it. */
+  .toast .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--accent); transform-origin: left center; opacity: .8; }
+  .toast.ok .bar { background: #4ade80; }
+  .toast.bad .bar { background: #f87171; }
+  .toast:hover .bar, .toast.expanded .bar { animation-play-state: paused; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
+  @keyframes toast-out { to { opacity: 0; transform: translateY(-14px); } }
+  @keyframes toast-bar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
   .tip { position: fixed; width: 280px; background: var(--surface); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 10px; color: var(--text-body); font-size: 12px; line-height: 1.55; z-index: 60; pointer-events: none; }
   .theme-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 1px solid var(--line-strong); }
   #themeMenu { position: fixed; top: 40px; right: 128px; width: 172px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 4px; z-index: 70; }
@@ -347,21 +372,143 @@ function updateSummary(state) {
   }
 }
 
-// Transient feedback pops in the corner and dismisses itself; only states that need an action
-// (a download in flight, an update ready to install) earn a persistent row.
-// The same update state arrives twice - once from the caller and once from the event stream - so an
-// identical toast that is still on screen is not repeated.
-let lastToastText = "";
-let lastToastNode;
-function toast(message, kind = "info") {
-  if (message === lastToastText && lastToastNode?.isConnected) return;
-  lastToastText = message;
-  const item = document.createElement("div");
-  item.className = `toast ${kind}`;
-  item.textContent = message;
-  $("toasts").append(item);
-  lastToastNode = item;
-  setTimeout(() => item.remove(), kind === "bad" ? 8000 : 4000);
+// Transient feedback pops in the corner, stacks, and folds away on its own. Only states that need an
+// action (a download in flight, an update ready to install) earn a persistent row.
+//
+// Two behaviours matter more than the animation:
+// - An identical message repeated (a user clicking "重新检测" over and over, or the same error coming
+//   back from every sweep) is folded into the notice already on screen with a "N 次" badge, instead
+//   of being swallowed as a duplicate. Silently dropping it made the app look frozen.
+// - Every notice carries a draining progress bar that is the toast's own countdown, so the row never
+//   blinks out mid-sentence. The bar is the same clock the removal timer uses, so they cannot drift.
+const TOAST_DEDUPE_MS = 8000; // an identical message inside this window folds into the live notice
+const TOAST_COLLAPSE_LIMIT = 4; // more than this many rows and the container starts folding
+const TOAST_LIFETIME_MS = { info: 6000, ok: 6000, bad: 10000 };
+
+/** Newest notice per message text, kept only while it is on screen. */
+const liveToasts = new Map();
+
+function collapseToasts(force) {
+  const box = $("toasts");
+  const rows = [...box.querySelectorAll(".toast:not(.leaving)")];
+  const overflow = rows.length > TOAST_COLLAPSE_LIMIT;
+  box.classList.toggle("collapsed", force ?? overflow);
+  if (!overflow) for (const row of rows) row.classList.remove("expanded");
+}
+
+/** Pauses the countdown while the pointer rests on the notice, so it can actually be read. */
+function holdToast(item, held) {
+  item.querySelector(".bar")?.style.setProperty("animation-play-state", held ? "paused" : "running");
+  item.dataset.held = held ? "1" : "";
+}
+
+function dismissToast(item, immediate) {
+  if (item.dataset.gone) return;
+  item.dataset.gone = "1";
+  clearTimeout(Number(item.dataset.timer));
+  const key = item.dataset.key;
+  if (key && liveToasts.get(key) === item) liveToasts.delete(key);
+  if (immediate) { item.remove(); collapseToasts(); return; }
+  item.classList.add("leaving");
+  setTimeout(() => { item.remove(); collapseToasts(); }, 320);
+}
+
+function restartToastTimer(item, kind) {
+  const life = TOAST_LIFETIME_MS[kind] ?? TOAST_LIFETIME_MS.info;
+  const bar = item.querySelector(".bar");
+  if (bar) {
+    bar.style.animation = "none";
+    void bar.offsetWidth; // reflow: re-running an animation needs the old one flushed first
+    bar.style.animation = `toast-bar ${life}ms linear forwards`;
+    holdToast(item, item.dataset.held === "1");
+  }
+  clearTimeout(Number(item.dataset.timer));
+  item.dataset.timer = String(setTimeout(() => dismissToast(item, false), life));
+}
+
+/** Repeats turn the banner into a "N 次" summary row whose history can be unfolded. */
+function promoteToast(item) {
+  const text = item.querySelector(".text")?.textContent ?? item.textContent;
+  const kind = item.dataset.kind ?? "info";
+  const rest = document.createElement("div");
+  rest.className = "rest";
+  const count = document.createElement("span");
+  count.className = "count";
+  const chev = document.createElement("span");
+  chev.className = "chev";
+  chev.textContent = "▶";
+  // Built fresh rather than moved: reusing the existing children means detaching and re-appending
+  // them, and a notice that is mid-animation does not survive that round trip cleanly.
+  item.className = `toast head ${kind}`;
+  item.textContent = "";
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = kind === "ok" ? "✓" : kind === "bad" ? "!" : "i";
+  const label = document.createElement("span");
+  label.className = "text";
+  label.textContent = text;
+  item.append(badge, label, count, chev, rest);
+  const toggle = (event) => {
+    event.stopPropagation();
+    const open = !item.classList.contains("expanded");
+    item.classList.toggle("expanded", open);
+    collapseToasts(open ? false : undefined);
+    holdToast(item, open || item.matches(":hover"));
+  };
+  chev.onclick = toggle;
+  return rest;
+}
+
+function toast(message, kind = "info", { sticky = false } = {}) {
+  const text = String(message);
+  const box = $("toasts");
+  const now = Date.now();
+  let item = liveToasts.get(text);
+  const seenHere = item?.isConnected && now - Number(item.dataset.born || 0) < TOAST_DEDUPE_MS;
+  let rest;
+  if (seenHere) {
+    // Same sentence again (the user hammering "重新检测"): keep ONE banner and count it, rather than
+    // swallowing the repeat - a click that produces no visible change reads as a frozen app.
+    rest = item.querySelector(".rest") ?? promoteToast(item);
+    const times = Number(item.dataset.times || 1) + 1;
+    item.dataset.times = String(times);
+    item.querySelector(".count").textContent = `${times} 次`;
+    if (!sticky) restartToastTimer(item, kind);
+  } else {
+    item = document.createElement("div");
+    item.className = `toast ${kind}`;
+    item.dataset.born = String(now);
+    item.dataset.times = "1";
+    item.dataset.kind = kind;
+    item.dataset.key = text;
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = kind === "ok" ? "✓" : kind === "bad" ? "!" : "i";
+    const label = document.createElement("span");
+    label.className = "text";
+    label.textContent = text;
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    item.append(badge, label, bar);
+    item.onmouseenter = () => holdToast(item, true);
+    item.onmouseleave = () => holdToast(item, item.classList.contains("expanded"));
+    item.onclick = () => dismissToast(item, false);
+    box.prepend(item);
+    liveToasts.set(text, item);
+    if (sticky) holdToast(item, true); // no countdown: the caller decides when it goes away
+    else restartToastTimer(item, kind);
+  }
+  if (rest) {
+    const stamp = document.createElement("div");
+    stamp.className = "stamp";
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = new Date(now).toLocaleTimeString("zh-CN", { hour12: false });
+    stamp.append(when);
+    rest.append(stamp);
+  }
+  collapseToasts();
+  return { dismiss: (immediate) => dismissToast(item, immediate) };
 }
 
 // An automatic check that found a new version routes its question here: the row offers the answer
@@ -381,6 +528,9 @@ function renderUpdate(state) {
   $("updatePromptText").textContent = prompt ? `发现新版本 v${state.version}，是否更新？` : "";
   promptedUpdateVersion = prompt ? String(state.version ?? "") : promptedUpdateVersion;
   if (!silent) {
+    // "checking" is not an outcome: the button that started the check already shows a "正在检查更新…"
+    // notice, and letting the state render its own row here produced the same sentence twice.
+    if (state?.status === "checking") return;
     if (state?.status === "uptodate") toast(`已是最新版本（v${state.currentVersion ?? ""}）`, "ok");
     if (state?.status === "available" && state?.notice === "download") toast(`发现新版本 v${state.version}，开始下载…`);
     if (state?.status === "error") toast(`更新检查失败：${state.message ?? "未知错误"}`, "bad");
@@ -631,18 +781,49 @@ clearLogButton.onclick = () => {
   refreshLog();
 };
 
+/**
+ * Every action button goes through this: it locks for the duration of the call and says so in the
+ * notice layer. Without it a click that takes a second (leaving a room, probing the client) looked
+ * like a dead button, and a double click queued two of the same action.
+ */
+async function withButtonBusy(button, busyText, run, { kind = "info" } = {}) {
+  if (button.dataset.busy) return undefined;
+  button.dataset.busy = "1";
+  button.disabled = true;
+  const started = Date.now();
+  const pending = busyText ? toast(busyText, kind, { sticky: true }) : undefined;
+  try {
+    return await run();
+  } catch (error) {
+    append({ type: "error", message: error?.message ?? String(error) });
+    return undefined;
+  } finally {
+    // A call that answered instantly should not flash its "working" notice; a short minimum makes
+    // the sequence read as action -> result rather than as a flicker.
+    const shownFor = Date.now() - started;
+    if (pending) {
+      if (shownFor < 400) await new Promise((resolve) => setTimeout(resolve, 400 - shownFor));
+      pending.dismiss(true);
+    }
+    button.dataset.busy = "";
+    button.disabled = false;
+  }
+}
+
 startButton.onclick = async () => {
-  try { render(await window.searcher.start()); } catch (error) { append({ type: "error", message: error.message }); }
+  const status = await withButtonBusy(startButton, "正在启动搜索…", () => window.searcher.start());
+  if (status) render(status);
 };
-stopButton.onclick = async () => render(await window.searcher.stop());
-leaveButton.onclick = async () => render(await window.searcher.leave());
+stopButton.onclick = () => withButtonBusy(stopButton, "正在停止…", async () => render(await window.searcher.stop()));
+leaveButton.onclick = () => withButtonBusy(leaveButton, "正在离开房间…", async () => render(await window.searcher.leave()));
 restartButton.onclick = async () => {
-  try { render(await window.searcher.restart()); } catch (error) { append({ type: "error", message: error.message }); }
+  const status = await withButtonBusy(restartButton, "正在重新搜索…", () => window.searcher.restart());
+  if (status) render(status);
 };
 
-$("diagnose").onclick = async () => {
+$("diagnose").onclick = () => withButtonBusy($("diagnose"), "正在检测客户端…", async () => {
   const result = await window.searcher.diagnose();
-  // Only the human-readable verdict is worth a toast; the path candidates and pid list behind it
+  // Only the human-readable verdict is worth a notice; the path candidates and pid list behind it
   // are noise for a normal user - they live in the hover details of the client status pill.
   renderClientStatus(result.ok
     ? { connected: true, source: result.source, port: result.port }
@@ -650,10 +831,14 @@ $("diagnose").onclick = async () => {
   toast(result.ok
     ? `已连接：来源 ${SOURCES[result.source] ?? result.source}，端口 ${result.port}`
     : result.message, result.ok ? "ok" : "bad");
-};
+});
 
 $("checkUpdate").onclick = async () => {
-  renderUpdate(await window.searcher.checkUpdate());
+  // Pressing this used to look like nothing happened for as long as the network round trip took,
+  // then a result appeared - the lag itself read as a hang. The button locks and a notice says what
+  // is happening from the first frame, then the answer replaces it.
+  const status = await withButtonBusy($("checkUpdate"), "正在检查更新…", () => window.searcher.checkUpdate());
+  if (status) renderUpdate(status, { immediate: true });
 };
 
 // The about dialog reads the live version from the updater state; the channel is derived from the
