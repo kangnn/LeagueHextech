@@ -171,9 +171,8 @@ function publishUpdateProblem(kind, raw) {
 }
 
 function setUpdateState(next) {
-  // `notice` is per-event routing for the renderer (prompt / silent / download) and must not leak
-  // into the next state - a stale "prompt" would re-open the ask on every download tick.
-  updateState = { ...updateState, notice: undefined, ...next };
+  // The state carries no presentation hints: manual/automatic routing lives in the renderer.
+  updateState = { ...updateState, ...next };
   publish({ type: "update", ...updateState });
   refreshTray();
 }
@@ -210,27 +209,9 @@ async function setUpdates() {
     error: (message) => publishUpdateProblem("error", message)
   };
   updater.on("checking-for-update", () => setUpdateState({ status: "checking" }));
-  updater.on("update-available", (info) => {
-    const version = info?.version;
-    const auto = updateCheckSource === "auto";
-    if (auto && version !== undefined && version === settings?.settings?.skippedUpdateVersion) {
-      // The user already declined this exact version; stay quiet until something newer appears.
-      setUpdateState({ status: "available", version, notice: "silent" });
-      return;
-    }
-    if (auto) {
-      // A background check never downloads on its own: it asks, with buttons in the window.
-      setUpdateState({ status: "available", version, notice: "prompt" });
-      return;
-    }
-    // A manual check means the user asked for it, so the download starts right away as before.
-    setUpdateState({ status: "available", version, notice: "download" });
-    void startUpdateDownload();
-  });
+  updater.on("update-available", (info) => setUpdateState({ status: "available", version: info?.version }));
   updater.on("update-not-available", () => setUpdateState({
     status: "uptodate", version: undefined, percent: undefined,
-    // A background check that finds nothing new is silence by design; only a manual check reports it.
-    notice: updateCheckSource === "auto" ? "silent" : undefined
   }));
   updater.on("download-progress", (progress) => setUpdateState({ status: "downloading", percent: Math.round(progress?.percent ?? 0) }));
   updater.on("update-downloaded", (info) => setUpdateState({ status: "ready", version: info?.version, percent: 100 }));
@@ -257,21 +238,56 @@ async function setUpdates() {
   return updater;
 }
 
-// Which kind of check is in flight; the "update-available"/"update-not-available" handlers read it
-// to decide between asking (auto) and acting (manual). Checks are never concurrent in practice.
-let updateCheckSource = "manual";
+// electron-updater does not run two checks at once - a second call silently becomes a follower of
+// the first - and its request can hang well past anyone's patience. The one wire is tracked here:
+// a manual click waits on it instead of hanging beside it, and a routine background check does not
+// stack a second request behind a live one. This collision is real: the 20-second startup check and
+// a user who clicks the button straight away land within the same few seconds.
+//
+// The main process deliberately does NOT know manual from automatic: every outcome is broadcast the
+// same way, and the renderer - which knows whether one of its own clicks is waiting - decides
+// whether that outcome is a banner, a question, or a quiet log line. A shared "current source"
+// variable here was read by these event handlers and clobbered whenever a click raced a background
+// check, which is exactly how the two banners and the stuck button happened.
+let updateCheckPromise = null;
+const UPDATE_CHECK_TIMEOUT_MS = 30_000;
 
-async function checkForUpdates(source = "manual") {
+/** @param wait manual calls wait on a live check instead of issuing a second one; background calls bail. */
+async function checkForUpdates(wait = true) {
   if (!updater) {
     publish({ type: "warning", message: "当前是免安装版，不能自动更新；请到发布页下载新版本。" });
     return { ...updateState, supported: false };
   }
-  updateCheckSource = source;
-  try {
-    await updater.checkForUpdates();
-  } catch (error) {
-    setUpdateState({ status: "error", message: describeUpdateProblem(String(error?.message ?? error)) });
+  if (updateCheckPromise) {
+    if (!wait) return updateState;
+    await updateCheckPromise;
+    return updateState;
   }
+  let timer;
+  const run = (async () => {
+    try {
+      // Bounded: the updater's own socket timeout is 60s and a stalled connection can hang right
+      // through it. Whatever happens on the wire, the check answers inside half a minute, so the
+      // button unlocks and its banner leaves even when the network never does.
+      await Promise.race([
+        updater.checkForUpdates(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("UPDATER_CHECK_TIMEOUT")), UPDATE_CHECK_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (error) {
+      const text = String(error?.message ?? error);
+      setUpdateState({
+        status: "error",
+        message: text === "UPDATER_CHECK_TIMEOUT" ? "检查更新超时，请稍后再试" : describeUpdateProblem(text),
+      });
+    } finally {
+      clearTimeout(timer);
+      updateCheckPromise = null;
+    }
+  })();
+  updateCheckPromise = run;
+  await run;
   return updateState;
 }
 
@@ -537,9 +553,10 @@ function start() {
     // The two answers to an automatic check's question: start moving bytes, or stop being asked
     // about this exact version (a newer one asks again; a manual check ignores the skip).
     ipcMain.handle("updates:download", () => startUpdateDownload());
+    // Record the declined version so automatic checks stop asking about exactly this one (a newer
+    // version asks again). The row itself is closed by the renderer, which owns presentation now.
     ipcMain.handle("updates:skip-version", async (_event, version) => {
       await settings.update({ skippedUpdateVersion: typeof version === "string" ? version.slice(0, 32) : "" });
-      setUpdateState({ notice: "silent" });
       return updateState;
     });
     // The renderer draws its own titlebar, so the window buttons live here. `close` still runs the

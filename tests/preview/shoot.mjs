@@ -342,12 +342,14 @@ async function main() {
   /* ---------- 6. 重复消息就是又一条横幅，而不是「N 次」汇总 ---------- */
   // Modelled on sonner, the toast library CC Switch uses: no counter, no progress bar, no expander.
   // A message that arrives three times is three sentences; collapsing them into "3 次" is a log
-  // widget wearing a banner's clothes. Automatic checks arrive as IPC events, so the harness pushes
-  // the same failing event three times.
+  // widget wearing a banner's clothes. Result banners only come from a *manual* check now, so the
+  // repeats are driven through the real button with the bridge rigged to fail.
   await evaluate(`document.getElementById('toasts').replaceChildren()`);
-  await evaluate(`window.searcher.__emit({ type: 'update', supported: true, status: 'error', message: '网络不可达', notice: 'prompt' })`);
-  await evaluate(`window.searcher.__emit({ type: 'update', supported: true, status: 'error', message: '网络不可达', notice: 'prompt' })`);
-  await evaluate(`window.searcher.__emit({ type: 'update', supported: true, status: 'error', message: '网络不可达', notice: 'prompt' })`);
+  await evaluate(`window.__updateResult = { supported: true, status: 'error', message: '网络不可达' }`);
+  await evaluate(`document.getElementById('checkUpdate').onclick()`);
+  await evaluate(`document.getElementById('checkUpdate').onclick()`);
+  await evaluate(`document.getElementById('checkUpdate').onclick()`);
+  await evaluate(`delete window.__updateResult`);
   await wait(480); // the toast-in animation is .4s; shooting earlier catches rows mid-flight
   const dedupe = await evaluate(`[...document.getElementById('toasts').children].map(r => ({
     text: r.querySelector('.text')?.textContent,

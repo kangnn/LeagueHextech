@@ -475,33 +475,26 @@ function toast(message, kind = "info", { sticky = false } = {}) {
   return { dismiss: (immediate) => dismissToast(item, immediate) };
 }
 
-// An automatic check that found a new version routes its question here: the row offers the answer
-// buttons instead of the app downloading on its own. `notice` values come from the main process:
-// prompt = ask, silent = a background check with nothing to say, download = a manual check that
-// already started downloading.
+// The main process broadcasts every update outcome the same way - it does not know manual from
+// automatic - so presentation is decided here, where the click actually happened. Two facts drive
+// it: whether a click on 「检查更新」 is waiting for its verdict, and which version the user already
+// declined (a background check must not re-ask about it; a manual check ignores the skip).
 let promptedUpdateVersion = "";
+let manualCheckPending = false;
+let skippedUpdateVersion = "";
 
-function renderUpdate(state) {
-  const silent = state?.notice === "silent";
-  const prompt = state?.notice === "prompt";
+function renderUpdate(state, { manual = false } = {}) {
+  const ask = state?.status === "available" && !manual && state?.version !== skippedUpdateVersion;
   const sticky = state?.status === "downloading" || state?.status === "ready";
   $("updateRow").hidden = !sticky;
   $("updateText").textContent = sticky ? updateSummary(state) : "";
   $("installUpdate").hidden = state?.status !== "ready";
-  $("updatePromptRow").hidden = !prompt;
+  $("updatePromptRow").hidden = !ask;
   // Guarded because this text goes straight to the user: an update state that arrives without a
   // version would otherwise render as "发现新版本 vundefined，是否更新？".
-  const promptVersion = state?.version ?? "";
-  $("updatePromptText").textContent = prompt && promptVersion ? `发现新版本 v${promptVersion}，是否更新？` : "";
-  promptedUpdateVersion = prompt ? String(promptVersion) : promptedUpdateVersion;
-  if (!silent) {
-    // "checking" is not an outcome: the button that started the check already shows a "正在检查更新…"
-    // notice, and letting the state render its own row here produced the same sentence twice.
-    if (state?.status === "checking") return;
-    if (state?.status === "uptodate") toast(`已是最新版本（v${state.currentVersion ?? ""}）`, "ok");
-    if (state?.status === "available" && state?.notice === "download") toast(`发现新版本 v${state.version}，开始下载…`);
-    if (state?.status === "error") toast(`更新检查失败：${state.message ?? "未知错误"}`, "bad");
-  }
+  const askVersion = state?.version ?? "";
+  $("updatePromptText").textContent = ask && askVersion ? `发现新版本 v${askVersion}，是否更新？` : "";
+  promptedUpdateVersion = ask ? String(askVersion) : promptedUpdateVersion;
   if (state?.currentVersion) setVersionLabels(state.currentVersion);
 }
 
@@ -777,23 +770,21 @@ function append(event) {
   const collapsible = event.type !== "configured";
   if (collapsible && key === lastKey && logLines.length > 0) {
     repeats += 1;
-    const counter = logLines[logLines.length - 1].querySelector(".x");
+    const counter = logLines[0].querySelector(".x");
     counter.hidden = false;
     counter.textContent = `×${repeats + 1}`;
     return;
   }
   repeats = 0;
   lastKey = key;
-  // The panel reads like a console: newest at the bottom, view following it. The notice stack sits
-  // over the panel's top edge, so a newest-first log would put every fresh line exactly where the
-  // toasts land - and following the tail also means the reader never loses their place.
-  const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  // Newest on top: the user reads a log from its freshest line down, and a search running for hours
+  // must not make them scroll to find out what just happened.
   const line = buildLine(event);
-  logLines.push(line);
-  log.append(line);
+  logLines.unshift(line);
+  log.prepend(line);
   // The buffer is bounded, so a search that runs all night cannot grow the panel or the DOM.
-  if (logLines.length > LOG_LIMIT) logLines.shift().remove();
-  if (stick) log.scrollTop = log.scrollHeight;
+  if (logLines.length > LOG_LIMIT) logLines.pop().remove();
+  log.scrollTop = 0;
   refreshLog();
 }
 
@@ -927,7 +918,7 @@ $("diagnose").onclick = () => {
   });
 };
 
-$("checkUpdate").onclick = () =>
+$("checkUpdate").onclick = async () => {
   // The one button that genuinely takes a while: a GitHub round trip. It gets the spinner like the
   // rest, and because the wait outlasts LOUD_AFTER_MS it also earns a banner saying what is happening -
   // that banner arriving late is exactly what makes it feel natural rather than abrupt.
@@ -935,7 +926,15 @@ $("checkUpdate").onclick = () =>
   // state as an "update" event (the channel every background check uses too), and that event is what
   // raises the result banner. Rendering the return value here as well put two identical banners on
   // screen for one click.
-  withButtonBusy($("checkUpdate"), "正在检查更新…", () => window.searcher.checkUpdate(), { loudText: "正在检查更新…" });
+  // The pending flag is how the renderer tells its own click apart from a background check when the
+  // outcome event arrives: set before the call, cleared only after it fully settles.
+  manualCheckPending = true;
+  try {
+    await withButtonBusy($("checkUpdate"), "正在检查更新…", () => window.searcher.checkUpdate(), { loudText: "正在检查更新…" });
+  } finally {
+    manualCheckPending = false;
+  }
+};
 
 // The about dialog reads the live version from the updater state; the channel is derived from the
 // version shape, the same rule the updater itself uses to pick its feed file.
@@ -1149,7 +1148,12 @@ $("downloadUpdate").onclick = async () => {
 };
 $("skipUpdate").onclick = async () => {
   const version = promptedUpdateVersion;
-  renderUpdate(await window.searcher.skipUpdateVersion(version));
+  // Presentation is local now: close the row and remember the declined version here, and persist
+  // it to settings so it survives a restart. The returned state is not re-rendered - it is still
+  // "available" for this version, and re-rendering would reopen the row just closed.
+  $("updatePromptRow").hidden = true;
+  if (version) skippedUpdateVersion = String(version);
+  await window.searcher.skipUpdateVersion(version);
   toast(`已跳过 v${version}，之后不再自动提醒这个版本`, "ok");
 };
 $("laterUpdate").onclick = () => {
@@ -1186,23 +1190,36 @@ function applySettings(settings) {
   // The summary carries the settings that actually change behaviour, so the panel can stay closed.
   const stall = Math.round((settings.stallTimeoutMs ?? 0) / 1000);
   $("settingsNow").textContent = `人数下限 ${settings.minPlayers} · 邀请上限 ${settings.maxInvites} · 低于下限${stall === 0 ? "不等待" : `等 ${stall}s`}`;
+  // The declined version arrives with settings so the skip survives a restart.
+  if (typeof settings.skippedUpdateVersion === "string" && settings.skippedUpdateVersion) {
+    skippedUpdateVersion = settings.skippedUpdateVersion;
+  }
   applyTheme(settings.themeId, settings.accentColor);
 }
 
 window.searcher.onEvent((event) => {
   countEvent(event);
   if (event.type === "update") {
-    renderUpdate(event);
-    // Only outcomes earn a log line: a downloaded update, "already current" after a manual check,
-    // or a failure. "checking", download ticks and "available" (covered by the ask row or the
-    // download toast) are transient - logging the start is what made one check show up twice.
-    // A "silent" event is a background check with nothing to say: no toast. But it still leaves one
-    // muted line below, so a user who waited out the automatic check can tell it ran - the bare
-    // silence was indistinguishable from the check never happening.
+    const manual = manualCheckPending;
+    renderUpdate(event, { manual });
+    // A manual check presents outcomes as banners: the user is watching, asked for this answer.
+    // A background check keeps to the log: it ran by itself, so it speaks quietly - but it does
+    // speak, because bare silence was indistinguishable from the check never happening.
+    if (manual && event.status !== "checking") {
+      if (event.status === "uptodate") toast(`已是最新版本（v${event.currentVersion ?? ""}）`, "ok");
+      // A click that finds a new version wants the bytes, not a question it would just answer yes.
+      if (event.status === "available") {
+        toast(`发现新版本 v${event.version}，开始下载…`);
+        void window.searcher.downloadUpdate();
+      }
+      if (event.status === "error") toast(`更新检查失败：${event.message ?? "未知错误"}`, "bad");
+    }
     const outcome = event.status === "ready" || event.status === "uptodate" || event.status === "error";
-    if (outcome && event.notice !== "silent") append({ ...event, message: updateSummary(event) });
-    if (event.status === "uptodate" && event.notice === "silent") {
-      append({ ...event, message: `自动检查：${updateSummary(event)}` });
+    if (outcome) {
+      // A finished download is not "the automatic check" reporting - it follows a user's yes - so
+      // only the check verdicts carry the prefix.
+      const prefix = manual || event.status === "ready" ? "" : "自动检查：";
+      append({ ...event, message: `${prefix}${updateSummary(event)}` });
     }
     return;
   }

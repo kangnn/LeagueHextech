@@ -60,10 +60,12 @@ const bridge = `<script>
     // Mirrors the real main process: the verdict is not only the invoke()'s return value - it is
     // ALSO published as an "update" event, and that event is what the renderer toasts from. The
     // return value exists for parity with updates:status; nothing in the UI may act on it twice.
+    // The harness can override the verdict (window.__updateResult) to drive a failing check the
+    // way the real network would.
     checkUpdate: () => {
-      const result = { supported: true, status: "uptodate", currentVersion: "0.1.5" };
+      const result = window.__updateResult ?? { supported: true, status: "uptodate", currentVersion: "0.1.5" };
       const run = async () => {
-        await wait(scene === "slow-update" ? 1300 : 150);
+        await wait(scene === "slow-update" && !window.__updateResult ? 1300 : 150);
         for (const fn of listeners) fn({ type: "update", ...result });
         return result;
       };
