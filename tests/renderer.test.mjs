@@ -400,6 +400,49 @@ check("the notice stack stays short even under a burst",
 check("a different message still gets its own banner",
   document.getElementById("toasts").children.filter((row) => row.querySelector(".text")).length >= 1);
 
+/* ---------- 横幅正在淡出时又来一条：修剪必须真的摘掉一行 ---------- */
+// 这是「连点几下界面就卡死」的那个 bug。栈满三条时，最旧那条 2 秒到期进入 .leaving 淡出——
+// 节点还留在栈里（只标了 gone），紧接着新的一条到达，超限就得摘掉最旧那条。原来的修剪是
+// `while (children.length > 3) dismissToast(最旧那条, true)`，而 dismissToast 见到已经标了 gone 的行
+// 直接 return、什么都不删，children 又是活集合：循环没有任何一行被摘掉，条件永远成立，
+// 渲染层主线程就此死循环——计时器不再执行，横幅定格在屏幕上，之后所有点击都没反应。
+// 到达并且断言通过，本身就是在证明修剪没有卡住。
+const stackBeforeFade = document.getElementById("toasts").children.length;
+const fading = document.getElementById("toasts").children[document.getElementById("toasts").children.length - 1];
+fading.onclick(); // 用户点掉最旧那条：gone=1 + .leaving，节点要等 400ms 才移除
+const joiningBurst = [];
+for (let i = 0; i < 2; i += 1) {
+  joiningBurst.push(document.getElementById("checkUpdate").onclick());
+}
+await Promise.all(joiningBurst);
+check("连点时横幅栈始终不超过三条",
+  document.getElementById("toasts").children.length <= 3,
+  `${stackBeforeFade} -> ${document.getElementById("toasts").children.length}`);
+check("超限时最旧那条被摘掉，即使它正在淡出",
+  !document.getElementById("toasts").children.includes(fading),
+  document.getElementById("toasts").children.map((row) => row.dataset.gone ?? "-").join(","));
+
+/* ---------- 被拦掉的第二次点击不会把指示灯钉在「检测中…」 ---------- */
+// 点击处理里先起脉冲、再进忙碌外壳（由外壳拒绝第二次点击）时，被拒绝的那次点击会留下一个
+// 永远等不到 endProbe 的脉冲：灯从此定格在「检测中…」，看起来就像程序卡住了。
+const diagnoseFluorescent = document.getElementById("client");
+let releaseDouble;
+let doubleCalls = 0;
+globalThis.window.searcher.diagnose = () => new Promise((resolve) => {
+  doubleCalls += 1;
+  releaseDouble = () => resolve({ ok: true, source: "client-log", port: 7252 });
+});
+const doubleClick = [document.getElementById("diagnose").onclick(), document.getElementById("diagnose").onclick()];
+check("同一 tick 里的第二次点击被拒，灯只有一次脉冲",
+  doubleCalls === 1 && diagnoseFluorescent.classList.contains("probing"),
+  `${doubleCalls} / ${diagnoseFluorescent.classList.contains("probing")}`);
+releaseDouble();
+await Promise.all(doubleClick);
+check("探测结束后指示灯不再闪烁（脉冲计数没有泄漏）",
+  !diagnoseFluorescent.classList.contains("probing") &&
+  document.getElementById("clientText").textContent === "已连接客户端",
+  `${diagnoseFluorescent.classList.contains("probing")} / ${document.getElementById("clientText").textContent}`);
+
 fire({ type: "update", supported: false, status: "idle" });
 check("a build with no updater shows no update row", updateRow.hidden === true);
 check("the install action is gone once there is nothing to install", document.getElementById("installUpdate").hidden === true);

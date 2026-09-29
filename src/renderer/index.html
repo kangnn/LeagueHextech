@@ -425,10 +425,18 @@ function updateSummary(state) {
 // reports an ongoing job (a download in flight, an update waiting for an answer) that must not
 // vanish while it is still true.
 const TOAST_LIFETIME_MS = { info: 2000, ok: 2000, bad: 2000 };
+// How many rows may sit on the stack at once: a notice stack taller than the window is a log.
+const TOAST_LIMIT = 3;
 let toastSerial = 0; // monotonic, so the newest row always has the highest z-index
 
 function dismissToast(item, immediate) {
-  if (item.dataset.gone) return;
+  // A row that already has an exit scheduled is still in the document for the length of the fade,
+  // and an immediate dismissal has to take it with it: the stack cap below removes rows it cannot
+  // wait for, and a row that refused to leave would have that caller remove nothing at all.
+  if (item.dataset.gone) {
+    if (immediate) item.remove();
+    return;
+  }
   item.dataset.gone = "1";
   clearTimeout(Number(item.dataset.timer));
   if (immediate) { item.remove(); return; }
@@ -456,6 +464,21 @@ function resumeToastTimers() {
   for (const row of $("toasts").children) restartToastTimer(row, row.dataset.kind ?? "info");
 }
 
+// The stack is capped by removing the oldest rows. This works on a snapshot, never on the live
+// `children`, and it removes the node itself if it is still there afterwards: the cap used to be
+// `while (children.length > 3) dismissToast(last, true)`, and a row already in its fade-out made
+// `dismissToast` return without removing anything - the loop then had nothing to make progress on
+// and the renderer spun forever. A few fast clicks on 「检测」 were enough to hit it (a fresh row
+// arriving inside the 400ms fade of the oldest one), and a frozen renderer stops running timers,
+// so the banner stays on screen and every later click is dead.
+function trimToasts() {
+  const rows = [...$("toasts").children];
+  for (const row of rows.slice(TOAST_LIMIT)) {
+    dismissToast(row, true);
+    if (row.isConnected) row.remove();
+  }
+}
+
 /** @returns {{dismiss: (immediate?: boolean) => void}} a handle so a sticky row can be closed early. */
 function toast(message, kind = "info", { sticky = false } = {}) {
   const text = String(message);
@@ -474,10 +497,9 @@ function toast(message, kind = "info", { sticky = false } = {}) {
   // Newest on top of the stack, literally: the fold hides every older row behind the newest one, so
   // the newest has to win the paint order or the fold would cover the wrong card.
   item.style.zIndex = String(toastSerial += 1);
-  // Newest first, and never more than a few rows: a notice stack taller than the window is a log.
+  // Newest first, then the rows past the cap leave.
   $("toasts").prepend(item);
-  const rows = $("toasts").children;
-  while (rows.length > 3) dismissToast(rows[rows.length - 1], true);
+  trimToasts();
   if (!sticky) restartToastTimer(item, kind);
   return { dismiss: (immediate) => dismissToast(item, immediate) };
 }
@@ -580,7 +602,11 @@ function floorChips(status) {
 
 // A probe can be triggered from the button, from the automatic sweep, or by a room action hitting a
 // dropped connection - they can overlap, and the light must not stop pulsing until the last one is
-// done. Hence a counter rather than a boolean.
+// done. Hence a depth count rather than a boolean.
+//
+// It is a count, not a token: a click the busy wrapper turns away never starts a probe at all (the
+// pulse is raised inside the accepted call), so every begin has exactly one end and the light can
+// never be left pulsing by a call that never ran.
 let activeProbes = 0;
 
 function beginProbe() {
@@ -591,13 +617,12 @@ function beginProbe() {
   // goes with it - a pill pulsing over "未检测到客户端" still reads as a verdict, not a question.
   delete clientPill.dataset.state;
   clientText.textContent = "检测中…";
-  return activeProbes;
 }
 
-function endProbe(token) {
-  // Guarded so a probe that started later keeps the pulse alive when an earlier one finishes.
-  if (token !== activeProbes) return;
-  activeProbes = 0;
+function endProbe() {
+  activeProbes = Math.max(0, activeProbes - 1);
+  // A probe that started later keeps the pulse alive when an earlier one finishes.
+  if (activeProbes > 0) return;
   clientPill.classList.remove("probing");
   // A probe that died before its verdict landed (the bridge threw) must not leave "检测中…" pinned
   // on screen; the neutral reading is the same one the startup grace period settles on.
@@ -898,32 +923,32 @@ restartButton.onclick = async () => {
 // Probing the client is the fastest thing in the app - it usually lands in well under 200ms. It says
 // so on the button and on the connection light, and then answers in a banner: the pill can only show
 // a colour, whereas the verdict also needs to name the source and the port it was found on.
-// The pulse starts synchronously with the click so the very first frame already reads as "working".
-$("diagnose").onclick = () => {
-  const probe = beginProbe();
-  return withButtonBusy($("diagnose"), "正在检测…", async () => {
-    try {
-      const result = await window.searcher.diagnose();
-      // Only the human-readable verdict is worth showing; the path candidates and pid list behind it
-      // are noise for a normal user - they live in the hover details of the client status pill.
-      renderClientStatus({
-        checkedAt: Date.now(),
-        connected: Boolean(result.ok),
-        hasClient: result.hasClient,
-        source: result.source,
-        port: result.port,
-        message: result.message,
-        attempts: result.attempts,
-      }, { flash: true });
-      // The row wraps rather than truncating, so the whole sentence fits and there is nothing to
-      // shorten. It is the same copy the pill's tooltip carries.
-      const where = result.ok && result.source ? `（来源 ${SOURCES[result.source] ?? result.source}${result.port ? `，端口 ${result.port}` : ""}）` : "";
-      toast(result.ok ? `已连接 League Client${where}` : result.message ?? "未检测到客户端", result.ok ? "ok" : "bad");
-    } finally {
-      endProbe(probe);
-    }
-  });
-};
+// The pulse starts synchronously with the accepted click - inside the busy wrapper, which is what
+// turns a second click away - so the very first frame already reads as "working" and a click that
+// never became a probe cannot leave the light pulsing.
+$("diagnose").onclick = () => withButtonBusy($("diagnose"), "正在检测…", async () => {
+  beginProbe();
+  try {
+    const result = await window.searcher.diagnose();
+    // Only the human-readable verdict is worth showing; the path candidates and pid list behind it
+    // are noise for a normal user - they live in the hover details of the client status pill.
+    renderClientStatus({
+      checkedAt: Date.now(),
+      connected: Boolean(result.ok),
+      hasClient: result.hasClient,
+      source: result.source,
+      port: result.port,
+      message: result.message,
+      attempts: result.attempts,
+    }, { flash: true });
+    // The row wraps rather than truncating, so the whole sentence fits and there is nothing to
+    // shorten. It is the same copy the pill's tooltip carries.
+    const where = result.ok && result.source ? `（来源 ${SOURCES[result.source] ?? result.source}${result.port ? `，端口 ${result.port}` : ""}）` : "";
+    toast(result.ok ? `已连接 League Client${where}` : result.message ?? "未检测到客户端", result.ok ? "ok" : "bad");
+  } finally {
+    endProbe();
+  }
+});
 
 $("checkUpdate").onclick = async () => {
   // The one button that genuinely takes a while: a GitHub round trip. It gets the spinner like the

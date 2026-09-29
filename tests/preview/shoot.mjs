@@ -500,6 +500,120 @@ async function main() {
   check("再探测成功时灯能切回已连接", back.text === "已连接客户端" && back.state === "on", JSON.stringify(back));
   await shoot("06-state-recovered");
 
+  /* ---------- 8. 连点：横幅正在淡出时又来一条，界面不能被锁死 ---------- */
+  // The freeze the dev build showed: three rows on the stack, the oldest one dismissed but still in
+  // the document for its 400ms fade, and a fourth arriving inside that window. The stack cap used to
+  // be a `while` over the live child list whose only way to make progress was `dismissToast`, which
+  // refuses to touch a row that is already leaving - so nothing was ever removed, the loop spun
+  // forever and the renderer stopped running timers (the banner froze on screen and every later
+  // click went dead). Reported as "一直点「检测」就会卡死".
+  //
+  // A frozen renderer never answers Runtime.evaluate, so the step is raced against a timeout: a
+  // regression has to fail the suite rather than hang it.
+  const alive = await Promise.race([
+    (async () => {
+      await evaluate(`window.postMessage({scene:'fast'}, '*')`);
+      await evaluate(`document.getElementById('toasts').replaceChildren()`);
+      await evaluate(`window.__updateResult = { supported: true, status: 'uptodate', currentVersion: '0.1.6' }`);
+      // Three notices on the stack, each one a real click on the real button.
+      for (let i = 0; i < 3; i += 1) await evaluate(`document.getElementById('checkUpdate').onclick()`);
+      await wait(200);
+      const stacked = await evaluate(`document.getElementById('toasts').children.length`);
+      // Dismiss the oldest row by clicking it: gone + .leaving, node stays for the 400ms fade.
+      await evaluate(`(() => {
+        const rows = document.getElementById('toasts').children;
+        rows[rows.length - 1].onclick();
+      })()`);
+      const fading = await evaluate(`document.getElementById('toasts').children.length`);
+      // A fourth notice arrives ~150ms later, inside that fade window: the cap has to take a row away.
+      await evaluate(`document.getElementById('checkUpdate').onclick()`);
+      await evaluate(`delete window.__updateResult`);
+      await wait(600);
+      const rows = await evaluate(`[...document.getElementById('toasts').children].map((r) => ({
+        text: r.querySelector('.text')?.textContent ?? '', gone: r.dataset.gone ?? null,
+      }))`);
+      // The readout above only answers if the renderer is still executing anything at all.
+      return { stacked, fading, rows };
+    })(),
+    wait(8000).then(() => undefined)
+  ]);
+  check("横幅淡出期间再来一条不会卡死界面", Boolean(alive), "渲染层已卡死（求值不再返回）");
+  check("连点时横幅栈始终不超过三条",
+    alive !== undefined && alive.stacked === 3 && alive.fading === 3 && alive.rows.length <= 3,
+    JSON.stringify(alive));
+  check("超限时最旧那条被摘掉，即使它正在淡出",
+    alive !== undefined && alive.rows.length === 3 && alive.rows.every((row) => row.gone === null),
+    JSON.stringify(alive?.rows));
+  // Only touch the page again if it answered the readout: a frozen renderer never returns from an
+  // evaluate, so an unconditional cleanup would hang the suite instead of failing it.
+  if (alive) {
+    await shoot("07-burst-dismiss");
+    await evaluate("document.getElementById('toasts').replaceChildren()");
+  }
+
+  /* ---------- 9. 两个按钮同时在飞：检测客户端 + 检查更新 ---------- */
+  // Two buttons never queue behind each other (the busy wrapper only guards its own button), so the
+  // one place their clicks meet is the notice stack: 「检查更新」raises a sticky row at 350ms while
+  // the probe answers with its own verdict. Both paths toast, so this is the other way the cap can be
+  // asked to drop a row - and the answer must be the same: the interface stays alive.
+  const concurrent = await Promise.race([
+    (async () => {
+      await evaluate(`window.postMessage({scene:'slow-update'}, '*')`);
+      await evaluate(`document.getElementById('toasts').replaceChildren()`);
+      // Both clicks land in their own task, because the fake bridge reads its delay when the call
+      // lands: the update check has to start while the scene still says "slow-update", and the probe
+      // one task later, when it says "slow". They then overlap for most of a second.
+      await evaluate(`(() => {
+        window.__pairDone = false;
+        window.__update = document.getElementById('checkUpdate').onclick();
+        return true;
+      })()`);
+      await evaluate(`window.postMessage({scene:'slow'}, '*')`);
+      await evaluate(`(() => {
+        window.__probe = document.getElementById('diagnose').onclick();
+        Promise.all([window.__update, window.__probe]).then(() => { window.__pairDone = true; });
+        return true;
+      })()`);
+      await wait(500); // both are still in flight, the update banner has just escalated
+      const mid = await evaluate(`({
+        rows: document.getElementById('toasts').children.length,
+        escalated: [...document.getElementById('toasts').children].some((r) => r.querySelector('.text')?.textContent === '正在检查更新…'),
+        probing: document.getElementById('client').classList.contains('probing'),
+        updateBusy: document.getElementById('checkUpdate').dataset.working === '1',
+        probeBusy: document.getElementById('diagnose').dataset.working === '1',
+      })`);
+      await wait(1600);
+      const end = await evaluate(`({
+        done: window.__pairDone === true,
+        rows: [...document.getElementById('toasts').children].map((r) => r.querySelector('.text')?.textContent ?? ''),
+        updateBusy: document.getElementById('checkUpdate').dataset.working ?? null,
+        probeBusy: document.getElementById('diagnose').dataset.working ?? null,
+        probing: document.getElementById('client').classList.contains('probing'),
+        pill: document.getElementById('clientText').textContent,
+      })`);
+      return { mid, end };
+    })(),
+    wait(8000).then(() => undefined)
+  ]);
+  check("两个按钮同时操作不会卡死界面", Boolean(concurrent), "渲染层已卡死（求值不再返回）");
+  check("飞行中：两个按钮各自忙碌，横幅不超过三条",
+    concurrent?.mid.updateBusy === true && concurrent?.mid.probeBusy === true && concurrent?.mid.rows <= 3,
+    JSON.stringify(concurrent?.mid));
+  check("检查更新的「进行中」横幅按时升起",
+    concurrent?.mid.escalated === true, JSON.stringify(concurrent?.mid));
+  check("两个操作都收尾：按钮解锁、指示灯不再闪烁、进行中横幅撤走",
+    concurrent !== undefined &&
+    concurrent.end.done === true &&
+    concurrent.end.updateBusy === null && concurrent.end.probeBusy === null &&
+    concurrent.end.probing === false &&
+    concurrent.end.pill === "未检测到客户端" &&
+    !concurrent.end.rows.includes("正在检查更新…"),
+    JSON.stringify(concurrent?.end));
+  if (concurrent) {
+    await shoot("08-both-buttons");
+    await evaluate("document.getElementById('toasts').replaceChildren()");
+  }
+
   fs.writeFileSync(path.join(outDir, "report.json"), JSON.stringify({ failures }, null, 2));
   console.log(`\n${failures.length === 0 ? "ALL PASS" : `${failures.length} FAILED`} — 截图在 ${path.relative(process.cwd(), outDir)}`);
 }
