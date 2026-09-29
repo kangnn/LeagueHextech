@@ -513,7 +513,11 @@ let manualCheckPending = false;
 let skippedUpdateVersion = "";
 
 function renderUpdate(state, { manual = false } = {}) {
-  const ask = state?.status === "available" && !manual && state?.version !== skippedUpdateVersion;
+  // Every "available" verdict asks before downloading - including a manual one. A click that finds a
+  // new version used to start the download itself, which took the decision away from the user; the
+  // question is the same one a background check raises. A manual check ignores the remembered skip
+  // (the user came asking on purpose), while a background check keeps respecting it.
+  const ask = state?.status === "available" && (manual || state?.version !== skippedUpdateVersion);
   const sticky = state?.status === "downloading" || state?.status === "ready";
   $("updateRow").hidden = !sticky;
   $("updateText").textContent = sticky ? updateSummary(state) : "";
@@ -1239,10 +1243,11 @@ window.searcher.onEvent((event) => {
     // speak, because bare silence was indistinguishable from the check never happening.
     if (manual && event.status !== "checking") {
       if (event.status === "uptodate") toast(`已是最新版本（v${event.currentVersion ?? ""}）`, "ok");
-      // A click that finds a new version wants the bytes, not a question it would just answer yes.
+      // A manual check that finds a new version raises the same question a background check does -
+      // the row with 立即更新 / 跳过该版本 / 稍后 - instead of downloading on the user's behalf. The
+      // banner only points at that row: it is what the user is looking for after clicking.
       if (event.status === "available") {
-        toast(`发现新版本 v${event.version}，开始下载…`);
-        void window.searcher.downloadUpdate();
+        toast(`发现新版本 v${event.version}，请选择是否更新`);
       }
       if (event.status === "error") toast(`更新检查失败：${event.message ?? "未知错误"}`, "bad");
     }

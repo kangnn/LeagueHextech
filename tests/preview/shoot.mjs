@@ -339,6 +339,43 @@ async function main() {
   const diagnoseCalls = await evaluate("window.__calls");
   check("飞行中重复点击被忽略", diagnoseCalls === 1, String(diagnoseCalls));
 
+  /* ---------- 5b. 手动检查发现新版本：先问用户，不替用户按下下载 ---------- */
+  // A manual check used to start the download the moment it found a version, spending the user's
+  // bandwidth without asking. It now raises the same 立即更新 / 跳过该版本 / 稍后 row a background
+  // check does, and the download only starts from that row.
+  await evaluate(`document.getElementById('toasts').replaceChildren()`);
+  await evaluate(`(() => {
+    window.__downloads = 0;
+    const original = window.searcher.downloadUpdate;
+    window.searcher.downloadUpdate = (...args) => { window.__downloads += 1; return original(...args); };
+  })()`);
+  await evaluate(`window.__updateResult = { supported: true, status: 'available', version: '0.1.7' }`);
+  await evaluate(`document.getElementById('checkUpdate').onclick()`);
+  await evaluate(`delete window.__updateResult`);
+  await wait(480); // the 150ms fake round trip plus the .4s toast-in animation
+  const ask = await evaluate(`({
+    promptShown: !document.getElementById('updatePromptRow').hidden,
+    promptText: document.getElementById('updatePromptText').textContent,
+    downloads: window.__downloads,
+    banner: [...document.getElementById('toasts').children].some(
+      (r) => (r.querySelector('.text')?.textContent ?? '').includes('发现新版本 v0.1.7')),
+  })`);
+  check("手动检查发现新版本弹询问框而不是直接下载",
+    ask.promptShown === true && ask.downloads === 0, JSON.stringify(ask));
+  check("询问文案带上发现的版本号",
+    ask.promptText === "发现新版本 v0.1.7，是否更新？", ask.promptText);
+  check("横幅把用户引到这个选择上", ask.banner === true, JSON.stringify(ask));
+  await shoot("04b-manual-check-asks");
+  // Answering the question is the only thing that moves bytes.
+  await evaluate(`document.getElementById('downloadUpdate').onclick()`);
+  await wait(200);
+  const answered = await evaluate(`({
+    downloads: window.__downloads,
+    promptHidden: document.getElementById('updatePromptRow').hidden,
+  })`);
+  check("点「立即更新」才开始下载并收起询问",
+    answered.downloads === 1 && answered.promptHidden === true, JSON.stringify(answered));
+
   /* ---------- 6. 重复消息就是又一条横幅，而不是「N 次」汇总 ---------- */
   // Modelled on sonner, the toast library CC Switch uses: no counter, no progress bar, no expander.
   // A message that arrives three times is three sentences; collapsing them into "3 次" is a log

@@ -355,6 +355,32 @@ check("the manual verdict also lands in the log carrying the same sentence",
   log.children[0].querySelector(".msg")?.textContent === "已是最新版本（v0.1.2）",
   log.children[0].querySelector(".msg")?.textContent);
 
+// Finding a new version by hand must raise the same question a background check does. It used to
+// start the download on the click, which spent the user's bandwidth without ever asking.
+let manualDownloads = 0;
+globalThis.window.searcher.downloadUpdate = async () => { manualDownloads += 1; return true; };
+globalThis.window.searcher.checkUpdate = () => new Promise((resolve) => {
+  fire({ type: "update", supported: true, status: "available", version: "0.1.3" });
+  resolve({ supported: true, status: "available", version: "0.1.3" });
+});
+await document.getElementById("checkUpdate").onclick();
+check("a manual check that finds a new version asks instead of downloading",
+  document.getElementById("updatePromptRow").hidden === false && manualDownloads === 0,
+  `row hidden=${document.getElementById("updatePromptRow").hidden} downloads=${manualDownloads}`);
+check("the question names the version that was found",
+  document.getElementById("updatePromptText").textContent === "发现新版本 v0.1.3，是否更新？",
+  document.getElementById("updatePromptText").textContent);
+check("the manual find points at the question with a banner",
+  document.getElementById("toasts").children.some((row) => row.textContent.includes("发现新版本 v0.1.3")),
+  document.getElementById("toasts").children.map((row) => row.textContent).join(" | "));
+// Answering the question is the one action that moves bytes.
+await document.getElementById("downloadUpdate").onclick();
+check("answering 立即更新 starts the download and closes the question",
+  manualDownloads === 1 && document.getElementById("updatePromptRow").hidden === true,
+  `downloads=${manualDownloads} row hidden=${document.getElementById("updatePromptRow").hidden}`);
+// The banners this block raised are its own business; the burst assertions below count rows.
+document.getElementById("toasts").replaceChildren();
+
 // A background check that fails stays off screen: it ran by itself, so it speaks in the log only.
 const toastsBeforeAutoFail = document.getElementById("toasts").children.length;
 fire({ type: "update", supported: true, status: "error", message: "网络不可达" });
