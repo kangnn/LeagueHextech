@@ -14,7 +14,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node tests/controller.test.mjs && node tests/renderer.test.mjs && node tests/tray.test.mjs && node tests/discovery.test.mjs && node tests/websocket.test.mjs && node tests/stats.test.mjs",
+    "test": "node tests/controller.test.mjs && node tests/renderer.test.mjs && node tests/tray.test.mjs && node tests/discovery.test.mjs && node tests/websocket.test.mjs && node tests/stats.test.mjs && node tests/update-cache.test.mjs",
     "test:controller": "node tests/controller.test.mjs",
     "test:renderer": "node tests/renderer.test.mjs",
     "test:tray": "node tests/tray.test.mjs",
@@ -23,6 +23,7 @@
     "build:portable": "node scripts/build-portable.mjs",
     "icon": "node scripts/make-tray-icon.mjs --preview pictures/tray-icon.png",
     "test:stats": "node tests/stats.test.mjs",
+    "test:update-cache": "node tests/update-cache.test.mjs",
     "preview": "node tests/preview/build-preview.mjs && node tests/preview/serve.mjs",
     "test:ui": "node tests/preview/build-preview.mjs && node tests/preview/shoot.mjs"
   },

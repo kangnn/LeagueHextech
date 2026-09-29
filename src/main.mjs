@@ -10,6 +10,7 @@ import { SearchController } from "./search-controller.mjs";
 import { SettingsStore } from "./settings.mjs";
 import { createStatsReporter } from "./stats.mjs";
 import { resolveAutoUpdater } from "./updater-loader.mjs";
+import { resetStaleUpdateCache } from "./update-cache.mjs";
 import { TRAY_ICON_16, TRAY_ICON_32 } from "./tray-icon.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -208,6 +209,12 @@ async function setUpdates() {
     warn: (message) => publishUpdateProblem("warning", message),
     error: (message) => publishUpdateProblem("error", message)
   };
+  // Before anything can download: drop a cached old blockmap that no longer describes the installer
+  // it would be used against, or every differential attempt rebuilds the wrong bytes and gives up on
+  // the whole 92 MB download (see src/update-cache.mjs). Not awaited - startup must not wait on disk
+  // work, and a failure here only costs the incremental path.
+  resetStaleUpdateCache(updater, { warn: (message) => publishUpdateProblem("warning", message) })
+    .catch(() => {});
   updater.on("checking-for-update", () => setUpdateState({ status: "checking" }));
   updater.on("update-available", (info) => setUpdateState({ status: "available", version: info?.version }));
   updater.on("update-not-available", () => setUpdateState({
