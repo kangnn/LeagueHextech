@@ -253,6 +253,117 @@ check("an adopted room above the floor is not put on a clock",
   adoptedOk.controller.status().belowFloor === false, String(adoptedOk.controller.status().belowFloor));
 adoptedOk.controller.stop();
 
+/* ---------- the floor is judged on the count just read, not on a high-water mark ---------- */
+// Regression: `#watchPlayerCount` is a high-water mark (it only ever rises, and is what decides "did
+// this room gain a player"). The floor used to be judged by it, so a room that reached the floor and
+// then lost players stayed "above" it forever - `belowFloor` stayed false, the stall branch was never
+// entered, and the tool sat in a collapsing 2/10 room indefinitely while the UI claimed all was well.
+function collapsingHarness({ stallTimeoutMs, startPlayers, thenPlayers }) {
+  const events = [];
+  let players = startPlayers;
+  let inLobby = false;
+  let leaves = 0;
+  const provider = {
+    get leaves() { return leaves; },
+    async listLobbies() { return [normalize(row("collapse-room", 1))]; },
+    async refreshLobbyList() {},
+    async joinLobby() { inLobby = true; },
+    async currentLobby() { return inLobby ? normalize(joined("collapse-room", players)) : undefined; },
+    async leaveLobby() { leaves += 1; inLobby = false; }
+  };
+  const controller = new SearchController(provider, {
+    policy: { ...DEFAULT_POLICY, nameKeywords: ["10钢"], minPlayers: 5, maxInvites: 50 },
+    stallTimeoutMs, emit: (event) => events.push(event),
+    intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+    watchIntervalFloorMs: 0, attemptGapMs: 0, refreshThrottleMs: 0
+  });
+  return { controller, provider, events, setPlayers: (value) => { players = value; } };
+}
+
+const collapsing = collapsingHarness({ stallTimeoutMs: 80, startPlayers: 6 });
+await collapsing.controller.start();
+await sleep(60);
+check("a room above the floor is not on the stall clock",
+  collapsing.controller.status().belowFloor === false, String(collapsing.controller.status().belowFloor));
+
+collapsing.setPlayers(2);   // the room loses players and is now well under the floor of 5
+await sleep(400);           // several multiples of the 80ms stall timeout
+check("a room that collapsed below the floor is abandoned, not watched forever",
+  collapsing.provider.leaves >= 1, `leaves=${collapsing.provider.leaves} state=${collapsing.controller.state}`);
+check("the collapse is explained as a stall",
+  collapsing.events.some((e) => e.type === "left-stalled-room" && e.message.includes("未达下限")),
+  JSON.stringify(collapsing.events.filter((e) => e.type === "left-stalled-room").map((e) => e.message)));
+collapsing.controller.stop();
+
+// The other half of the same fix: dropping under the floor restarts the stall clock. Otherwise the
+// timestamp left over from when the room was still filling would already be older than the timeout,
+// and the room would be kicked out on the very first check instead of getting the wait that was asked for.
+const graceRoom = collapsingHarness({ stallTimeoutMs: 5_000, startPlayers: 6 });
+await graceRoom.controller.start();
+await sleep(80);
+graceRoom.setPlayers(2);
+await sleep(300);           // far short of the 5s the setting promises
+check("a room that just lost players gets the configured wait rather than an instant kick",
+  graceRoom.provider.leaves === 0, `leaves=${graceRoom.provider.leaves}`);
+check("the wait is visible in the status snapshot", graceRoom.controller.status().belowFloor === true);
+graceRoom.controller.stop();
+
+/* ---------- leaving a room reports whether the client actually let go ---------- */
+// Regression: `leave()` stops the search first, so a failed DELETE also ended at state `idle` - the
+// error was only recorded, never reflected in the state. 「继续搜索」 guarded on `state !== "idle"`,
+// sailed straight past it, and re-adopted the very room the user had asked to leave.
+const refusingLeave = new SearchController({
+  async listLobbies() { return []; },
+  async refreshLobbyList() {},
+  async joinLobby() {},
+  async currentLobby() { return normalize(joined("stuck-room", 8, 1)); },
+  async leaveLobby() { throw new Error("LCU 请求被拒绝（DELETE /lol-lobby/v2/lobby，HTTP 500）"); }
+}, {
+  policy: { ...DEFAULT_POLICY, nameKeywords: [], minPlayers: 5, maxInvites: 50 },
+  emit: () => {},
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  watchIntervalFloorMs: 0, attemptGapMs: 0, refreshThrottleMs: 0
+});
+const refused = await refusingLeave.leave();
+check("a leave the client refused is reported as not-left", refused.left === false, String(refused.left));
+check("and the failure is still surfaced to the user",
+  typeof refusingLeave.status().lastError === "string", String(refusingLeave.status().lastError));
+refusingLeave.stop();
+
+// The success path has to keep saying so, or the guard would block every legitimate restart.
+const acceptingLeave = new SearchController({
+  async listLobbies() { return []; },
+  async refreshLobbyList() {},
+  async joinLobby() {},
+  async currentLobby() { return normalize(joined("fine-room", 8, 1)); },
+  async leaveLobby() {}
+}, {
+  policy: { ...DEFAULT_POLICY, nameKeywords: [], minPlayers: 5, maxInvites: 50 },
+  emit: () => {},
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  watchIntervalFloorMs: 0, attemptGapMs: 0, refreshThrottleMs: 0
+});
+const accepted = await acceptingLeave.leave();
+check("a leave the client accepted is reported as left", accepted.left === true, String(accepted.left));
+check("the accepted leave still lands in idle", accepted.state === "idle", accepted.state);
+acceptingLeave.stop();
+
+// A provider that cannot leave at all must not look like a successful leave either.
+const noLeaveController = new SearchController({
+  async listLobbies() { return []; },
+  async refreshLobbyList() {},
+  async joinLobby() {},
+  async currentLobby() { return undefined; }
+}, {
+  policy: { ...DEFAULT_POLICY, nameKeywords: [], minPlayers: 5, maxInvites: 50 },
+  emit: () => {},
+  intervalMs: 10, maxIntervalMs: 10, sweepIntervalMs: 10, maxSweepIntervalMs: 10,
+  watchIntervalFloorMs: 0, attemptGapMs: 0, refreshThrottleMs: 0
+});
+const unsupported = await noLeaveController.leave();
+check("a provider with no leave endpoint reports not-left", unsupported.left === false, String(unsupported.left));
+noLeaveController.stop();
+
 /* ---------- a version mismatch is explained, parked, and called out as a cluster once ---------- */
 // The log used to show the refusal itself: "LCU 请求被拒绝（POST /lol-lobby/v2/party/…/join，HTTP 400）
 // RPC_ERROR：INVALID_GAME_VERSION". The code is the whole message, so it is translated, the room is

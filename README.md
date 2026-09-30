@@ -59,6 +59,10 @@ npm run build:portable
 
 产物在 `dist\LeagueHextech\`，双击 `LeagueHextech.exe` 即可，约 317 MB（内含 Electron 运行时）。整个文件夹可以直接拷贝给别人，对方**不需要 Node 或 npm**。
 
+构建脚本会把 `package.json` 里声明的运行时依赖（目前是 `ws`，含其自身的依赖）一并拷进产物的
+`node_modules\`——手写的组装流程不会替你打包依赖，少一个就是一个「能打开但一启动就崩」的产物。
+按设计**不打包 `electron-updater`**：免安装版没有安装目录可供替换。
+
 > 免安装版**不能自动更新**——它没有安装目录可供替换，点「检查更新」会提示你去发布页下载新版本。
 >
 > 另外，两种形态的 exe 都**没有代码签名**：exe 的图标与版本信息已经写入（不再是 Electron 默认 logo），但首次运行仍可能遇到 Windows SmartScreen 的「未知发布者」提示，点「更多信息 → 仍要运行」即可。
@@ -136,7 +140,8 @@ src/
   renderer/index.html   整个界面：布局、样式与事件渲染
   tray-icon.mjs         生成的内嵌托盘图标（base64 PNG）
 scripts/
-  build-portable.mjs    从 node_modules/electron 组装免安装目录，并用 rcedit 写入图标与版本
+  build-portable.mjs    从 node_modules/electron 组装免安装目录，带上运行时依赖，并用 rcedit 写入图标与版本
+  portable-deps.mjs     解析免安装版要打包哪些运行时依赖（递归，按设计排除 electron-updater）
   make-tray-icon.mjs    用纯 Node 画托盘图标与 exe 图标（自写 PNG/ICO 编码）
   publish-via-api.mjs   网络无法 git push 时，改用 Git Data API 发布提交（见下）
 electron-builder.yml    安装包（NSIS）与自动更新的构建配置

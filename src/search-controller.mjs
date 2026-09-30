@@ -380,10 +380,18 @@ export class SearchController {
     this.#transition(STATES.idle, { type: "stopped" });
   }
 
-  /** Explicit "leave room" for the joined state. */
+  /**
+   * Explicit "leave room" for the joined state.
+   *
+   * The returned status carries `left`, which is true only when the client confirmed the party is gone.
+   * Callers that chain a leave into a new search depend on it: a failed DELETE used to be indistinguishable
+   * from a successful one (both left the state at `idle`, because `stop()` had already set it and the catch
+   * branch only recorded the error), so 「继续搜索」 sailed past its own guard and re-adopted the very room
+   * the user had asked to leave.
+   */
   async leave() {
     this.stop();
-    if (!this.provider.leaveLobby) return this.status();
+    if (!this.provider.leaveLobby) return { ...this.status(), left: false };
     // Tearing a party down is the client's work, and it can take seconds when invitations are pending or
     // the client is busy. Saying so up front keeps the UI from showing "已停止" and then nothing at all
     // until the client finally answers.
@@ -392,11 +400,12 @@ export class SearchController {
     try {
       await this.provider.leaveLobby({});
       this.#transition(STATES.idle, { type: "left", elapsedMs: this.clock() - startedAt });
+      return { ...this.status(), left: true };
     } catch (error) {
       this.#lastError = describe(error);
       this.#emit({ type: "error", message: this.#lastError });
+      return { ...this.status(), left: false };
     }
-    return this.status();
   }
 
   #transition(state, event = {}) {
@@ -665,7 +674,9 @@ export class SearchController {
         message: `邀请已达上限，人数仍为 ${playerCount}，已退出`
       });
     }
-    this.#rememberFloorWait();
+    // Judged on the count just read, not on the high-water mark: a room that peaked at the floor and
+    // then lost players is under it again, and has to be waited on (and eventually left) like any other.
+    this.#rememberFloorWait(playerCount);
     if (this.#belowFloor) {
       // The invitation rule cannot catch a room whose owner simply invited nobody, so the floor is
       // enforced on a clock as well: `stallTimeoutMs` without a single new player means the room is not
@@ -744,10 +755,23 @@ export class SearchController {
   /**
    * Recomputes whether the watched room sits under the player floor and when it will be given up on.
    * The deadline is what the UI shows, so a deliberate wait never looks like the tool being stuck.
+   *
+   * The floor is judged against the count just observed, never against `#watchPlayerCount`: that field
+   * is a high-water mark kept for "has this room ever gained a player", so judging the floor by it meant
+   * a room that reached the floor and then lost players stayed "above" it forever - `#belowFloor` stayed
+   * false, the stall branch was never entered, and the tool sat in a collapsing room indefinitely.
+   *
+   * Entering the below-floor state restarts the stall clock. The clock measures "no progress while under
+   * the floor", and a room that just lost players has not made progress - but `#watchProgressAt` may
+   * still hold a timestamp from minutes ago, when the room was last filling, which would abandon the
+   * room on the spot instead of granting the bounded wait the setting promises.
    */
-  #rememberFloorWait() {
-    this.#belowFloor = this.#watchPlayerCount < (Number(this.policy.minPlayers) || 0);
-    this.#watchDeadlineAt = this.#belowFloor && this.stallTimeoutMs > 0
+  #rememberFloorWait(playerCount = this.#watchPlayerCount) {
+    const floor = Number(this.policy.minPlayers) || 0;
+    const belowFloor = (Number(playerCount) || 0) < floor;
+    if (belowFloor && !this.#belowFloor) this.#watchProgressAt = this.clock();
+    this.#belowFloor = belowFloor;
+    this.#watchDeadlineAt = belowFloor && this.stallTimeoutMs > 0
       ? this.#watchProgressAt + this.stallTimeoutMs
       : undefined;
   }

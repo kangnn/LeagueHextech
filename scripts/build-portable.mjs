@@ -14,6 +14,7 @@
 import { cp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { collectPortablePackages, createPackageLocator, findUnresolvedImports } from "./portable-deps.mjs";
 
 const APP_NAME = "LeagueHextech";
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,6 +70,22 @@ async function applyBranding(exePath, version) {
   }
 }
 
+/**
+ * Proves the assembled folder can actually load itself.
+ *
+ * Copying `src/` and hoping is what produced a portable build that died with ERR_MODULE_NOT_FOUND before
+ * a window opened - and the repository could not show it, because Node resolves `ws` out of the repo's own
+ * `node_modules` when it walks up from `src/`. `findUnresolvedImports` confines its search to the copied
+ * folder for exactly that reason, so this check sees what the user will get rather than what the clone
+ * happens to provide.
+ */
+async function assertShippedImportsResolve(appRoot) {
+  const missing = await findUnresolvedImports({ appRoot });
+  if (missing.length > 0) {
+    throw new Error(`产物缺少运行时代码依赖：${missing.join("、")}。请检查 scripts/portable-deps.mjs 的解析规则。`);
+  }
+}
+
 async function main() {
   try {
     await stat(path.join(electronDist, "electron.exe"));
@@ -89,15 +106,44 @@ async function main() {
   console.log("写入应用代码…");
   await cp(path.join(projectRoot, "src"), path.join(appRoot, "src"), { recursive: true });
   const projectPackage = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
-  // A minimal manifest: the packaged app needs no dependencies, only its own entry point.
+
+  // The runtime dependencies travel with the code. Without this the folder looks complete and then dies
+  // at startup: `src/lcu-websocket.mjs` imports `ws`, and `src/main.mjs` imports that at the top level,
+  // so a missing package is not a degraded feature - it is ERR_MODULE_NOT_FOUND before any window opens.
+  // In the repository the bug cannot reproduce, because Node walks up out of `src/` into the repo's own
+  // `node_modules`; it only shows up once the folder is moved, which is how a user runs it.
+  const packages = await collectPortablePackages({
+    dependencies: projectPackage.dependencies ?? {},
+    locate: createPackageLocator({
+      projectRoot,
+      readManifest: async (dir) => JSON.parse(await readFile(path.join(dir, "package.json"), "utf8"))
+    })
+  });
+  for (const [name, { version, dir }] of packages) {
+    await cp(dir, path.join(appRoot, "node_modules", name), { recursive: true });
+    console.log(`  依赖 ${name}@${version}`);
+  }
+  if (packages.size === 0) console.warn("  警告：没有解析到任何运行时依赖，产物可能无法启动。");
+
+  // A minimal manifest: the packaged app needs only its own entry point and the dependencies copied
+  // above. `electron-updater` is deliberately absent (see scripts/portable-deps.mjs): the updater import
+  // in main.mjs is guarded, and a portable copy has no installation directory to update in place.
   const appPackage = {
     name: projectPackage.name,
     version: projectPackage.version,
     description: projectPackage.description,
     main: "src/main.mjs",
-    type: "module"
+    type: "module",
+    dependencies: Object.fromEntries(
+      [...packages].map(([name, { version }]) => [name, version ? `^${version}` : "*"])
+    )
   };
   await writeFile(path.join(appRoot, "package.json"), `${JSON.stringify(appPackage, null, 2)}\n`, "utf8");
+
+  // The folder is not "built" until it can load itself; see the helper for why this cannot be left to
+  // a test run from inside the repository.
+  await assertShippedImportsResolve(appRoot);
+  console.log("  已校验：产物的所有 import 都能在文件夹内部解析。");
 
   const runtimeExe = path.join(outputRoot, "electron.exe");
   const appExe = path.join(outputRoot, `${APP_NAME}.exe`);

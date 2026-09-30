@@ -91,6 +91,19 @@ jobs:
       - name: Build the portable app
         run: npm run build:portable
 
+      # The build script verifies its own output, but that check reads the folder in place - and in place
+      # means inside the checkout, where Node can still resolve packages out of the repository's own
+      # node_modules. Moving it away first is what proves the copy is self-contained, which is the only
+      # thing a user ever gets. This exact gap is how a portable build missing `ws` was published.
+      - name: Verify the portable folder is self-contained
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:RUNNER_TEMP "portable-probe"
+          Remove-Item $probe -Recurse -Force -ErrorAction SilentlyContinue
+          Move-Item "$PWD/dist/LeagueHextech" $probe
+          node scripts/verify-portable.mjs $probe
+          Move-Item $probe "$PWD/dist/LeagueHextech"
+
       - name: Package the portable folder as a single archive
         shell: pwsh
         run: |

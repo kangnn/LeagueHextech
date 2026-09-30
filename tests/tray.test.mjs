@@ -104,9 +104,124 @@ check("the build points rcedit at the generated ico", /"pictures", "icon\.ico"/.
 check("the build also stamps product and file version", /"product-version"/.test(build) && /"file-version"/.test(build));
 check("a missing rcedit only warns instead of failing the build", /跳过 exe 图标/.test(build));
 
+/* ---------- the portable build ships its runtime dependencies ---------- */
+// Regression: the folder was assembled by hand with a copy of `src/` and no `node_modules`, which was
+// fine until `src/lcu-websocket.mjs` began importing `ws`. `src/main.mjs` imports that module at the top
+// level, so every portable build died with ERR_MODULE_NOT_FOUND before a window could open - and the bug
+// was invisible in the repository, because Node finds the repo's own `node_modules` when resolving from
+// `src/`. These checks assert the resolution rule itself, and that the built folder is not left to luck.
+const { collectPortablePackages, createPackageLocator, PORTABLE_OMITTED, findUnresolvedImports,
+  RUNTIME_PROVIDED_SPECIFIERS, GUARDED_OPTIONAL_SPECIFIERS } =
+  await import(new URL("../scripts/portable-deps.mjs", import.meta.url).href);
+
+check("the build copies the runtime dependencies into the folder",
+  /collectPortablePackages\(/.test(build) && /node_modules/.test(build));
+
+// The shipped-import check must not excuse whatever the omission list happens to contain: deriving its
+// exemptions from `PORTABLE_OMITTED` made it circular, so a build missing `ws` passed its own check.
+check("the shipped-import check does not derive its exemptions from the omission list",
+  GUARDED_OPTIONAL_SPECIFIERS.join() === "electron-updater" &&
+  !GUARDED_OPTIONAL_SPECIFIERS.some((name) => name === "ws"),
+  JSON.stringify(GUARDED_OPTIONAL_SPECIFIERS));
+check("ws is never treated as safe to omit", !PORTABLE_OMITTED.includes("ws"));
+check("electron is exempt because the runtime supplies it, not because it is omitted",
+  RUNTIME_PROVIDED_SPECIFIERS.includes("electron"));
+
+// The check itself has to actually notice a missing package. `exists` is injected so this runs without
+// building the whole folder.
+const scanRoot = path.join(root, "src");
+const everythingMissing = await findUnresolvedImports({ appRoot: root, exists: async () => false });
+check("the shipped-import check reports a package that is not in the folder",
+  everythingMissing.some((entry) => entry.startsWith("ws（")), JSON.stringify(everythingMissing));
+check("it does not report node builtins as missing packages",
+  !everythingMissing.some((entry) => /^node:/.test(entry)), JSON.stringify(everythingMissing.slice(0, 5)));
+check("it does not report the guarded updater as missing",
+  !everythingMissing.some((entry) => entry.startsWith("electron-updater（")), JSON.stringify(everythingMissing));
+const everythingPresent = await findUnresolvedImports({ appRoot: root, exists: async () => true });
+check("a complete folder reports nothing missing", everythingPresent.length === 0, JSON.stringify(everythingPresent));
+check("the check only scans the app's own source, not node_modules",
+  scanRoot.endsWith("src") && /await visit\(path\.join\(appRoot, "src"\)\)/.test(
+    readFileSync(path.join(root, "scripts", "portable-deps.mjs"), "utf8")));
+
+// The CI step points this script at a folder moved OUT of the checkout, because the build's own check
+// reads it in place - where the repository's node_modules can still satisfy a missing package.
+const verifyScript = readFileSync(path.join(root, "scripts", "verify-portable.mjs"), "utf8");
+check("a standalone verifier exists for a folder moved out of the checkout",
+  /findUnresolvedImports/.test(verifyScript) && /resources.*app/.test(verifyScript));
+check("the verifier fails the build rather than warning",
+  /process\.exit\(1\)/.test(verifyScript) && /缺少运行时代码依赖/.test(verifyScript));
+check("the release workflow moves the folder away before verifying it",
+  /Move-Item "\$PWD\/dist\/LeagueHextech" \$probe/.test(
+    readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8")));
+
+// Every declared runtime dependency must arrive, not just the one that happens to be imported today.
+const pkgForBuild = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+const planned = await collectPortablePackages({
+  dependencies: pkgForBuild.dependencies,
+  locate: async (name) => {
+    const versions = { ws: "8.22.0", "electron-updater": "6.8.9" };
+    if (!(name in versions)) throw new Error(`ENOENT ${name}`);
+    return { manifest: { version: versions[name], dependencies: {} }, dir: `/nm/${name}` };
+  }
+});
+check("every declared runtime dependency is planned into the folder",
+  Object.keys(pkgForBuild.dependencies).every((name) => planned.has(name) || PORTABLE_OMITTED.includes(name)),
+  JSON.stringify([...planned.keys()]));
+check("ws - the package whose absence crashed the app - is planned",
+  planned.has("ws"), JSON.stringify([...planned.keys()]));
+check("electron-updater is deliberately left out of the portable folder",
+  PORTABLE_OMITTED.includes("electron-updater") && !planned.has("electron-updater"),
+  JSON.stringify([...planned.keys()]));
+check("the planned manifest records the real version, not a placeholder",
+  planned.get("ws")?.version === "8.22.0", String(planned.get("ws")?.version));
+
+// Transitive dependencies have to be followed, or a future package with its own deps ships broken.
+const transitive = await collectPortablePackages({
+  dependencies: { outer: "1.0.0" },
+  omitted: [],
+  locate: async (name) => ({
+    manifest: name === "outer"
+      ? { version: "1.0.0", dependencies: { inner: "^2.0.0" } }
+      : { version: "2.3.4", dependencies: {} },
+    dir: `/nm/${name}`
+  })
+});
+check("a dependency's own dependencies are followed too",
+  transitive.has("outer") && transitive.get("inner")?.version === "2.3.4", JSON.stringify([...transitive.keys()]));
+
+// A package that is declared but not installed must stop the build with a sentence, not produce a
+// folder that starts and then cannot import.
+const missing = await collectPortablePackages({
+  dependencies: { ghost: "1.0.0" },
+  omitted: [],
+  locate: async () => { throw new Error("ENOENT"); }
+}).then(() => null, (error) => error);
+check("a declared but uninstalled dependency fails the build loudly",
+  missing instanceof Error && /ghost/.test(missing.message), String(missing?.message));
+
+// The locator has to resolve like Node, including a dependency npm left nested under another package.
+const locateNested = createPackageLocator({
+  projectRoot: path.join(path.sep, "app"),
+  readManifest: async (dir) => {
+    if (dir === path.join(path.sep, "app", "node_modules", "outer", "node_modules", "nested")) {
+      return { version: "9.9.9" };
+    }
+    throw new Error("ENOENT");
+  }
+});
+const nested = await locateNested("nested", path.join(path.sep, "app", "node_modules", "outer"))
+  .then((r) => r.manifest, () => null);
+check("a nested dependency is found instead of reported missing", nested?.version === "9.9.9", JSON.stringify(nested));
+
+check("the build refuses to ship a folder with no runtime dependencies at all",
+  /没有解析到任何运行时依赖/.test(build));
+check("the shipped manifest declares the copied dependencies",
+  /dependencies: Object\.fromEntries/.test(build));
+
 /* ---------- wiring ---------- */
 const main = readFileSync(path.join(root, "src", "main.mjs"), "utf8");
 const renderer = readFileSync(path.join(root, "src", "renderer", "index.html"), "utf8");
+const controllerSource = readFileSync(path.join(root, "src", "search-controller.mjs"), "utf8");
 
 check("a tray is created", /new Tray\(createTrayImage\(\)\)/.test(main));
 check("the icon is supplied at both scale factors",
@@ -142,6 +257,15 @@ check("the saved stall timeout is handed to the controller",
 check("the settings panel still exposes the stall timeout", /id="stallTimeoutSec"/.test(renderer));
 check("the stall explanation still says 0 means no waiting", /填 0 = 不等待/.test(renderer));
 check("the mode setting is gone from the UI", !/modePolicy/.test(renderer));
+
+// Regression guard: the 「继续搜索」 handler guarded on `state !== "idle"`, but `leave()` stops the
+// search before it asks the client, so a failed DELETE also ended at `idle` and the guard let the new
+// search re-adopt the very room the user asked to leave. The guard must key off the leave verdict.
+check("restart keys off whether the leave actually happened, not off the state",
+  /if \(!afterLeave\.left\) return afterLeave;/.test(main) && !/afterLeave\.state !== "idle"/.test(main));
+check("a leave reports its verdict rather than only the state",
+  /return \{ \.\.\.this\.status\(\), left: true \}/.test(controllerSource) &&
+  /return \{ \.\.\.this\.status\(\), left: false \}/.test(controllerSource));
 
 /* ---------- the updater wiring ---------- */
 // The updater must never be able to stop the app from starting: electron-updater only exists in the

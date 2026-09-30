@@ -528,11 +528,12 @@ function start() {
     ipcMain.handle("search:stop", () => { controller.stop(); return controller.status(); });
     ipcMain.handle("search:leave", () => controller.leave());
     // One click for "this room is fine but I don't want it": leave, then search again. Starting only
-    // after the leave actually reached idle - a failed leave leaves the room in place, and a new
-    // search would just adopt the very room the user asked to leave.
+    // after the leave actually reached the client - a failed leave leaves the room in place, and a new
+    // search would just adopt the very room the user asked to leave. The state cannot be used as the
+    // signal: `leave()` stops the search first, so a failed DELETE also ends up at `idle`.
     ipcMain.handle("search:restart", async () => {
       const afterLeave = await controller.leave();
-      if (afterLeave.state !== "idle") return afterLeave;
+      if (!afterLeave.left) return afterLeave;
       await controller.start();
       return controller.status();
     });
