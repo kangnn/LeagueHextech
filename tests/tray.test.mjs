@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 // The project root is one level up from this file.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const { TRAY_ICON_16, TRAY_ICON_32 } = await import(new URL("../src/tray-icon.mjs", import.meta.url).href);
+const { TRAY_ICON_16, TRAY_ICON_32, WINDOW_ICON_256 } = await import(new URL("../src/tray-icon.mjs", import.meta.url).href);
 
 let failures = 0;
 const check = (name, condition, detail = "") => {
@@ -74,6 +74,14 @@ let opaque = 0;
 for (let y = 0; y < 16; y += 1) for (let x = 0; x < 16; x += 1) if (png16.pixel(x, y).a > 200) opaque += 1;
 check("the 16px icon still has enough ink to read", opaque > 40 && opaque < 150, String(opaque));
 check("the two sizes are different drawings", TRAY_ICON_16 !== TRAY_ICON_32);
+let largeIcon;
+try { largeIcon = decodePng(WINDOW_ICON_256); } catch { /* reported as a regression below */ }
+check("the window has a native 256px image instead of enlarging its 16px tray icon",
+  largeIcon?.width === 256 && largeIcon?.height === 256);
+if (largeIcon) {
+  check("the large window icon preserves a clear ring and transparent gap",
+    near(largeIcon.pixel(128, 40), RING_CYAN) && largeIcon.pixel(128, 80).a === 0);
+}
 
 /* ---------- the exe icon container ---------- */
 // Windows takes the exe's icon out of this file, so a malformed container silently means an unbranded
@@ -95,7 +103,7 @@ for (let i = 0; i < icoCount; i += 1) {
   if (offset + length > ico.length) icoEntriesOk = false;
 }
 check("it carries the sizes Explorer, the taskbar and Alt-Tab ask for",
-  icoSizes.join("/") === "16/24/32/48/64/128/256", icoSizes.join("/"));
+  [16, 20, 24, 32, 40, 48, 60, 64, 72, 80, 96, 128, 256].every(size => icoSizes.includes(size)), icoSizes.join("/"));
 check("every entry is an in-bounds PNG payload", icoEntriesOk, icoSizes.join("/"));
 
 const build = readFileSync(path.join(root, "scripts", "build-portable.mjs"), "utf8");

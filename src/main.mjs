@@ -4,14 +4,15 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_POLICY } from "./eligibility.mjs";
 import { createLcuFetch } from "./lcu-fetch.mjs";
 import { discoverLcuConnection } from "./lcu-discovery.mjs";
-import { LcuCustomLobbyProvider, normalize } from "./lcu-provider.mjs";
+import { LcuCustomLobbyProvider } from "./lcu-provider.mjs";
+import { handleLcuEvent } from "./lcu-events.mjs";
 import { createLcuWebsocket } from "./lcu-websocket.mjs";
 import { SearchController } from "./search-controller.mjs";
 import { SettingsStore } from "./settings.mjs";
 import { createStatsReporter } from "./stats.mjs";
 import { resolveAutoUpdater } from "./updater-loader.mjs";
 import { resetStaleUpdateCache } from "./update-cache.mjs";
-import { TRAY_ICON_16, TRAY_ICON_32 } from "./tray-icon.mjs";
+import { TRAY_ICON_16, TRAY_ICON_32, WINDOW_ICON_256 } from "./tray-icon.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -336,8 +337,9 @@ function createWindow() {
     titleBarStyle: "hidden",
     title: "LeagueHextech",
     backgroundColor: "#101014",
-    // Same drawing as the tray, so the window and taskbar stop showing the Electron logo.
-    icon: createTrayImage(),
+    // A full-resolution image for Windows taskbar / Alt-Tab; the tray's 16px logical
+    // image is too small here, regardless of its attached 2x representation.
+    icon: nativeImage.createFromBuffer(Buffer.from(WINDOW_ICON_256, "base64")),
     webPreferences: { preload: path.join(here, "preload.cjs"), contextIsolation: true, nodeIntegration: false }
   });
   window.loadFile(path.join(here, "renderer", "index.html"));
@@ -413,19 +415,9 @@ async function refreshClientStatus() {
   return clientStatus;
 }
 
-/** The joined-lobby endpoints the watch loop consumes; every other push is ignored. */
-const LOBBY_PUSH_URIS = new Set(["/lol-lobby/v2/lobby", "/lol-lobby/v1/lobby"]);
-
-function handleLcuSocketEvent({ uri, eventType, data }) {
-  if (!LOBBY_PUSH_URIS.has(uri)) return;
-  if (eventType === "Delete" || data === null || data === undefined) {
-    // The room is gone (game started, or the user left): an empty push runs the room-gone path.
-    controller?.acceptLobbyPush(undefined);
-    return;
-  }
-  if (typeof data !== "object" || Array.isArray(data)) return;
+function handleLcuSocketEvent(event) {
   try {
-    controller?.acceptLobbyPush(normalize(data));
+    handleLcuEvent(controller, event);
   } catch {
     // A payload shape the normalizer does not know is dropped; the backstop fetch covers the gap.
   }

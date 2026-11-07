@@ -43,6 +43,8 @@ const PLAYER_SLOTS = 10;
 function normalizeBrowserRow(raw) {
   return {
     id: String(raw.partyId ?? raw.id),
+    browserId: raw.id,
+    gameType: raw.gameType,
     name: raw.lobbyName ?? raw.name,
     mapId: raw.mapId,
     // The browser exposes slot counts; a 10-slot ARAM room is the 5v5 variant.

@@ -119,6 +119,7 @@ function encodePng(size, pixels) {
 
 const png16 = encodePng(16, draw(16));
 const png32 = encodePng(32, draw(32));
+const png256 = encodePng(256, draw(256));
 
 /**
  * Packs PNGs into a Windows .ico container.
@@ -150,7 +151,9 @@ function encodeIco(images) {
 
 // The exe icon is picked by Windows from this file, so it carries every size Explorer, the taskbar and
 // the Alt-Tab switcher may ask for.
-const icoSizes = [16, 24, 32, 48, 64, 128, 256];
+// Include the physical sizes used by Explorer at 125%, 150%, 175%, 200% and 250% DPI.
+// Native frames avoid interpolating a small bitmap for desktop and taskbar icons.
+const icoSizes = [16, 20, 24, 28, 32, 40, 48, 56, 60, 64, 72, 80, 84, 96, 120, 128, 256];
 const icoPath = path.join(projectRoot, "pictures", "icon.ico");
 writeFileSync(icoPath, encodeIco(icoSizes.map((size) => ({ size, buffer: encodePng(size, draw(size)) }))));
 console.log(`wrote ${path.relative(projectRoot, icoPath)} (${icoSizes.join("/")})`);
@@ -171,6 +174,9 @@ const module = `/**
  */
 export const TRAY_ICON_16 = "${png16.toString("base64")}";
 export const TRAY_ICON_32 = "${png32.toString("base64")}";
+// BrowserWindow must not reuse the 16px logical tray image: Windows can enlarge that
+// HICON for the taskbar and Alt-Tab even when a 2x representation is attached.
+export const WINDOW_ICON_256 = "${png256.toString("base64")}";
 `;
 writeFileSync(outputPath, module, "utf8");
 console.log(`wrote ${path.relative(projectRoot, outputPath)} (16px ${png16.length}B, 32px ${png32.length}B)`);

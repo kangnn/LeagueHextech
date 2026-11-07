@@ -19,6 +19,14 @@ function describe(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Browser ordering is cosmetic. Only fields used to select a room may wake a backed-off sweep.
+function listSignature(lobbies) {
+  return JSON.stringify(lobbies.map((lobby) => JSON.stringify([
+    lobby.id, lobby.name, lobby.mapId, lobby.maxHumanPlayers, lobby.playerCount,
+    lobby.requiresPassword, lobby.joinable, lobby.gameMode, lobby.gameMutator, lobby.displayName
+  ])).sort());
+}
+
 /** Reason codes are stable identifiers; the log shows the readable form so a leave is explainable. */
 const REASON_LABELS = Object.freeze({
   "not-target-map": "地图不是嚎哭深渊",
@@ -121,10 +129,20 @@ export class SearchController {
   #exhaustedRooms = new Map();
   // Player counts of the newest browser snapshot, keyed by room id. Replaced on every sweep.
   #snapshotCounts = new Map();
-  #seenLobbyIds = new Set();
   #sweepDelayMs;
   #sweepCount = 0;
   #lastForcedRefreshAt = Number.NEGATIVE_INFINITY;
+  #refreshInFlight = false;
+  #cycleTask;
+  #listPushTimer;
+  #pendingList;
+  #hasPendingList = false;
+  #listSignature;
+  #nextSearchAt = 0;
+  #retryAt = 0;
+  #attemptedSnapshots = new Map();
+  #watchTask;
+  #pendingWatch;
   // A joined room is watched until it fills, spends its invitation budget, or stops growing below the
   // player floor. `#adoptedRoom` marks the one exception: a room the user was already in is watched the
   // same way but never vacated by the tool.
@@ -161,7 +179,7 @@ export class SearchController {
     sweepIntervalMs = 3_000,
     maxSweepIntervalMs = 15_000,
     // The client is asked to re-scan its lobby browser at most this often.
-    refreshThrottleMs = 10_000,
+    refreshThrottleMs = 3_000,
     // How long a room abandoned for a spent invitation budget stays out of the running when the
     // browser still reports it as unchanged.
     exhaustedCooldownMs = 120_000,
@@ -252,12 +270,43 @@ export class SearchController {
     const signal = this.#abort?.signal;
     clearTimeout(this.#timer);
     clearTimeout(this.#pushTimer);
+    if (this.#watchTask?.signal === signal) {
+      this.#pendingWatch = { lobby };
+      return true;
+    }
     this.#pushTimer = setTimeout(() => {
       this.#pushTimer = undefined;
       if (this.#stale(signal) || !this.#watchJoined) return;
-      this.#watchWith(signal, lobby).catch((error) => this.#watchFailure(signal, error));
-    }, this.pushDebounceMs);
+      this.#watch(signal, { lobby }).catch((error) => this.#watchFailure(signal, error));
+    }, this.#watchDeadlineDelay(this.pushDebounceMs));
     return true;
+  }
+
+  /** Complete browser snapshots skip a GET; child events only invalidate the current snapshot. */
+  acceptLobbyListPush(lobbies) {
+    if (!this.#running || this.#state !== STATES.searching || this.#lastError) return false;
+    if (lobbies !== undefined && !Array.isArray(lobbies)) return false;
+    if (lobbies && !this.#hasPendingList && listSignature(lobbies) === this.#listSignature) return true;
+    this.#pendingList = lobbies;
+    this.#hasPendingList = true;
+    this.#scheduleListPush(this.#abort.signal);
+    return true;
+  }
+
+  #scheduleListPush(signal) {
+    clearTimeout(this.#timer);
+    // Fixed coalescing window: continuous pushes cannot postpone the wake indefinitely.
+    if (this.#listPushTimer !== undefined) return;
+    this.#listPushTimer = setTimeout(() => {
+      this.#listPushTimer = undefined;
+      if (this.#stale(signal) || this.#state !== STATES.searching) return;
+      if (!this.#hasPendingList) return;
+      if (this.#cycleTask?.signal === signal) return; // its finally block drains the pending update
+      const snapshot = this.#pendingList;
+      this.#pendingList = undefined;
+      this.#hasPendingList = false;
+      void this.#cycle(signal, snapshot, true);
+    }, this.pushDebounceMs);
   }
 
   /** Applies non-sensitive settings without restarting an active search. */
@@ -269,6 +318,10 @@ export class SearchController {
     if (Array.isArray(nameKeywords)) this.policy.nameKeywords = [...nameKeywords];
     if (Number.isFinite(maxInvites) && maxInvites >= 0) this.policy.maxInvites = maxInvites;
     if (Number.isFinite(stallTimeoutMs) && stallTimeoutMs >= 0) this.stallTimeoutMs = stallTimeoutMs;
+    if (this.#watchJoined) {
+      this.#rememberFloorWait(this.#selected?.playerCount);
+      this.#scheduleWatch(this.#abort.signal);
+    }
     this.#emit({ type: "configured" });
     return this.status();
   }
@@ -282,8 +335,14 @@ export class SearchController {
     this.#rejectedThisSweep.clear();
     this.#exhaustedRooms.clear();
     this.#snapshotCounts = new Map();
-    this.#seenLobbyIds.clear();
     this.#lastForcedRefreshAt = Number.NEGATIVE_INFINITY;
+    this.#hasPendingList = false;
+    this.#pendingList = undefined;
+    this.#listSignature = undefined;
+    this.#nextSearchAt = 0;
+    this.#retryAt = 0;
+    this.#attemptedSnapshots.clear();
+    this.#pendingWatch = undefined;
     this.#watchJoined = false;
     this.#watchingSummary = undefined;
     this.#watchPlayerCount = 0;
@@ -347,6 +406,7 @@ export class SearchController {
           message: `已在房间内（非本工具加入），人数 ${this.#watchPlayerCount} 低于下限 ${floor}，等待房间增长`,
           selectedSummary: this.#watchingSummary
         });
+        if (this.stallTimeoutMs === 0) return this.#watch(signal, { lobby: existing });
         return this.#scheduleWatch(signal);
       }
       this.#running = false;
@@ -370,6 +430,11 @@ export class SearchController {
     this.#timer = undefined;
     clearTimeout(this.#pushTimer);
     this.#pushTimer = undefined;
+    clearTimeout(this.#listPushTimer);
+    this.#listPushTimer = undefined;
+    this.#hasPendingList = false;
+    this.#pendingList = undefined;
+    this.#pendingWatch = undefined;
     this.#selected = undefined;
     this.#watchJoined = false;
     this.#watchingSummary = undefined;
@@ -432,24 +497,31 @@ export class SearchController {
     }
     // Fire and forget, for the same reason as in `#cycle`: the client's rescan and the backoff
     // sleep now overlap instead of adding up before the next sweep.
-    void this.#maybeRefresh(signal, { force: true });
+    void this.#maybeRefresh(signal);
     if (this.#stale(signal)) return;
     this.#delayMs = this.#sweepDelayMs;
+    this.#retryAt = this.clock() + this.#sweepDelayMs;
     this.#sweepDelayMs = Math.min(this.#sweepDelayMs * 2, this.maxSweepIntervalMs);
     this.#transition(STATES.searching, { type: "sweep-exhausted", count: attempted, retryInMs: this.#delayMs });
-    return this.#schedule(signal);
+    // Keep observing the browser at the configured cadence while individual retries back off.
+    return this.#schedule(signal, Math.min(this.intervalMs, this.#delayMs));
   }
 
   /** Best-effort forced re-scan of the public browser; throttled and never fatal. */
-  async #maybeRefresh(signal, { force = false } = {}) {
-    if (!this.provider.refreshLobbyList) return;
+  async #maybeRefresh(signal) {
+    if (!this.provider.refreshLobbyList || this.#refreshInFlight || this.#stale(signal)) return;
     const now = this.clock();
-    if (!force && now - this.#lastForcedRefreshAt < this.refreshThrottleMs) return;
+    if (now - this.#lastForcedRefreshAt < this.refreshThrottleMs) return;
+    this.#refreshInFlight = true;
     this.#lastForcedRefreshAt = now;
     try {
       await this.provider.refreshLobbyList({ signal });
     } catch {
       // A client build without this endpoint is not an error; the previously fetched list is reused.
+    } finally {
+      this.#refreshInFlight = false;
+      // A slow refresh gets the same quiet period as a fast one. Old sessions cannot alter a new clock.
+      if (!this.#stale(signal)) this.#lastForcedRefreshAt = this.clock();
     }
   }
 
@@ -462,7 +534,26 @@ export class SearchController {
     return signal.aborted || !this.#running;
   }
 
-  async #cycle(signal) {
+  async #cycle(signal, snapshot, fromPush = false) {
+    if (this.#stale(signal) || this.#cycleTask?.signal === signal) return;
+    const task = { signal };
+    this.#cycleTask = task;
+    try {
+      await this.#runCycle(signal, snapshot, fromPush);
+    } finally {
+      if (this.#cycleTask === task) {
+        this.#cycleTask = undefined;
+        if (!this.#stale(signal) && this.#state === STATES.searching && !this.#lastError && this.#hasPendingList) {
+          this.#scheduleListPush(signal);
+        } else if (!this.#stale(signal)) {
+          this.#hasPendingList = false;
+          this.#pendingList = undefined;
+        }
+      }
+    }
+  }
+
+  async #runCycle(signal, snapshot, fromPush) {
     if (this.#stale(signal)) return;
     try {
       this.#transition(STATES.searching);
@@ -470,8 +561,22 @@ export class SearchController {
       // seconds (5s was observed on a busy client), and serialising it in front of every list fetch
       // slowed the whole search loop by exactly that much every cycle. The rescan lands in time for
       // the next cycle's list read.
-      void this.#maybeRefresh(signal);
-      const lobbies = await this.provider.listLobbies({ signal });
+      if (!fromPush) void this.#maybeRefresh(signal);
+      let lobbies = snapshot ?? await this.provider.listLobbies({ signal });
+      if (this.#stale(signal)) return;
+      // A child event received during GET makes that response obsolete. The queued cycle
+      // must read again; joining from a known-invalid response wastes a request or picks a stale room.
+      if (this.#hasPendingList && this.#pendingList === undefined) return;
+      if (this.#hasPendingList && this.#pendingList) {
+        lobbies = this.#pendingList;
+        this.#pendingList = undefined;
+        this.#hasPendingList = false;
+      }
+      const signature = listSignature(lobbies);
+      if (fromPush && signature === this.#listSignature) {
+        return this.#schedule(signal, Math.max(0, this.#nextSearchAt - this.clock()));
+      }
+      this.#listSignature = signature;
       // The client answered, so whatever failed before is over. Without this a single stalled request
       // left "最近错误" showing for the rest of the session even though the search had recovered.
       this.#lastError = undefined;
@@ -480,14 +585,19 @@ export class SearchController {
       this.#lastRefreshAt = this.clock();
       this.#candidateCount = lobbies.length;
 
-      // An unseen room id means the list is moving: go back to the base cadence.
       this.#snapshotCounts = new Map(lobbies.map((lobby) => [String(lobby.id), Number(lobby.playerCount) || 0]));
-      const ids = new Set(lobbies.map((lobby) => String(lobby.id)));
-      if ([...ids].some((id) => !this.#seenLobbyIds.has(id))) this.#sweepDelayMs = this.sweepIntervalMs;
-      this.#seenLobbyIds = ids;
-
       const ranked = rankLobbies(lobbies, this.policy);
       this.#eligibleCount = ranked.length;
+      const backingOff = this.clock() < this.#retryAt;
+      if (!backingOff) this.#attemptedSnapshots.clear();
+      // Only a new or changed eligible candidate may bypass the retry delay. Churn in
+      // unrelated rows must not turn an unchanged busy room into two join requests per second.
+      const unparked = ranked.filter(({ lobby }) => !this.#isExhaustedRoom(lobby));
+      const available = backingOff ? unparked.filter(({ lobby }) =>
+        this.#attemptedSnapshots.get(String(lobby.id)) !== listSignature([lobby])) : unparked;
+      if (backingOff && available.length === 0) {
+        return this.#schedule(signal, Math.min(this.intervalMs, this.#retryAt - this.clock()));
+      }
       if (ranked.length === 0) {
         this.#selected = undefined;
         this.#delayMs = this.intervalMs;
@@ -495,7 +605,7 @@ export class SearchController {
         return this.#schedule(signal);
       }
 
-      const retryable = ranked.filter((candidate) =>
+      const retryable = available.filter((candidate) =>
         !this.#rejectedThisSweep.has(String(candidate.lobby.id)) && !this.#isExhaustedRoom(candidate.lobby));
       if (retryable.length === 0) {
         // Nothing left to attempt: every room was rejected, or the rest are known-dead rooms.
@@ -509,6 +619,7 @@ export class SearchController {
 
       let attempts = 0;
       let budgetSpent = false;
+      if (backingOff) this.#sweepDelayMs = this.sweepIntervalMs;
       for (const candidate of ordered) {
         if (this.#stale(signal)) return;
         if (attempts >= this.maxAttemptsPerSweep) {
@@ -520,6 +631,7 @@ export class SearchController {
           if (this.#stale(signal)) return;
         }
         attempts += 1;
+        this.#attemptedSnapshots.set(String(candidate.lobby.id), listSignature([candidate.lobby]));
         this.#selected = candidate.lobby;
         this.#transition(STATES.joining, {
           type: "joining",
@@ -530,6 +642,7 @@ export class SearchController {
         });
         try {
           await this.provider.joinLobby(candidate.lobby.id, { signal });
+          if (this.#stale(signal)) return;
         } catch (error) {
           if (this.#stale(signal)) return;
           if (error?.skip) {
@@ -559,7 +672,10 @@ export class SearchController {
         this.#transition(STATES.verifying, { type: "verifying", lobby: candidate.lobby, message: "已进入房间，核对模式与邀请额度" });
         const current = await this.provider.currentLobby({ signal });
         if (this.#stale(signal)) return;
-        const verification = this.#verify(current, candidate.lobby.id);
+        let verification = this.#verify(current, candidate.lobby.id);
+        if (verification.ok && this.stallTimeoutMs === 0 && Number(current.playerCount) < Number(this.policy.minPlayers)) {
+          verification = { ok: false, reason: "too-few-players" };
+        }
         if (verification.ok) {
           this.#selected = current;
           this.#delayMs = this.intervalMs;
@@ -600,9 +716,19 @@ export class SearchController {
           // enough: the next sweep forgot it and joined the same hopeless room again, burning a join
           // attempt, a leave, and an extra LCU round trip every minute.
           this.#rememberExhausted(current ?? candidate.lobby, this.inviteLimitCooldownMs);
+        } else {
+          this.#rememberExhausted(candidate.lobby);
         }
-        this.#emit({ type: "rejected-after-join", lobby: current ?? candidate.lobby, message: `${describeReason(verification.reason)}，已退出`, reason: verification.reason, modeVerified: verification.modeVerified });
-        return this.#schedule(signal);
+        const immediateFloor = verification.reason === "too-few-players";
+        this.#transition(STATES.searching, {
+          type: immediateFloor ? "left-stalled-room" : "rejected-after-join",
+          lobby: current ?? candidate.lobby,
+          message: immediateFloor
+            ? `人数 ${current.playerCount} 低于下限 ${Number(this.policy.minPlayers) || 0}，按设置不等待，已退出`
+            : `${describeReason(verification.reason)}，已退出`,
+          reason: verification.reason, modeVerified: verification.modeVerified
+        });
+        continue;
       }
 
       this.#delayMs = this.intervalMs;
@@ -630,11 +756,38 @@ export class SearchController {
    * and the judgment are split (`#watchWith`) so a WebSocket push can run the judgment on data
    * the client already delivered, without another round trip.
    */
-  async #watch(signal) {
+  async #watch(signal, pushed) {
     if (this.#stale(signal) || !this.#watchJoined) return;
+    if (this.#watchTask?.signal === signal) {
+      if (pushed) this.#pendingWatch = pushed;
+      return;
+    }
+    const task = { signal };
+    this.#watchTask = task;
+    try {
+      await this.#runWatch(signal, pushed);
+    } finally {
+      if (this.#watchTask === task) {
+        this.#watchTask = undefined;
+        const pending = this.#pendingWatch;
+        this.#pendingWatch = undefined;
+        if (pending && !this.#stale(signal) && this.#watchJoined) this.acceptLobbyPush(pending.lobby);
+      }
+    }
+  }
+
+  async #runWatch(signal, pushed) {
+    if (this.#stale(signal) || !this.#watchJoined) return;
+    if (pushed) return this.#watchWith(signal, pushed.lobby);
     let current;
     try {
       current = await this.provider.currentLobby({ signal });
+      if (this.#stale(signal)) return;
+      // A newer push beats a slower GET that was already in flight when the event arrived.
+      if (this.#pendingWatch) {
+        current = this.#pendingWatch.lobby;
+        this.#pendingWatch = undefined;
+      }
       // Same as in the sweep: a successful read clears whatever the previous failure left behind.
       this.#lastError = undefined;
       this.#diagnostics = undefined;
@@ -817,12 +970,18 @@ export class SearchController {
     return Math.max(this.intervalMs, this.watchIntervalFloorMs);
   }
 
+  #watchDeadlineDelay(delay) {
+    if (!this.#belowFloor || this.#watchDelayMs) return delay;
+    if (this.stallTimeoutMs === 0) return 0;
+    return Math.min(delay, Math.max(0, this.#watchDeadlineAt - this.clock()));
+  }
+
   #scheduleWatch(signal) {
     if (this.#stale(signal) || !this.#watchJoined) return;
     clearTimeout(this.#timer);
     this.#timer = setTimeout(() => {
       this.#watch(signal).catch((error) => this.#watchFailure(signal, error));
-    }, this.#watchDelayMs || this.#watchIntervalMs());
+    }, this.#watchDeadlineDelay(this.#watchDelayMs || this.#watchIntervalMs()));
   }
 
   /** A failure while watching a joined room: retried, unless the client session itself is gone. */
@@ -872,8 +1031,10 @@ export class SearchController {
     return Number(lobby.playerCount) <= record.playerCount;
   }
 
-  #schedule(signal) {
+  #schedule(signal, delay = this.#delayMs) {
     if (this.#stale(signal)) return;
-    this.#timer = setTimeout(() => this.#cycle(signal), this.#delayMs);
+    clearTimeout(this.#timer);
+    this.#nextSearchAt = this.clock() + delay;
+    this.#timer = setTimeout(() => this.#cycle(signal), delay);
   }
 }
