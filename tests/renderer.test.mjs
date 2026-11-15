@@ -106,7 +106,7 @@ class El {
 const IDS = [
   "state", "log", "logCount", "clearLog", "start", "stop", "leave", "restart", "diagnose", "checkUpdate",
   "client", "clientText", "refreshed", "sweeps", "selectionRow", "selection",
-  "errorRow", "error", "updateRow", "updateText", "installUpdate",
+  "searchSummaryRow", "searchSummary", "errorRow", "error", "updateRow", "updateText", "installUpdate",
   "updatePromptRow", "updatePromptText", "downloadUpdate", "skipUpdate", "laterUpdate",
   "pollIntervalMs", "minPlayers", "maxInvites",
   "stallTimeoutSec", "nameKeywords", "save", "settingsNow",
@@ -258,6 +258,21 @@ check("clearing the log zeroes the aggregate too",
   ["statAttempts", "statJoined", "statAbandoned", "statSkipped", "statErrors"].map((id) => document.getElementById(id).textContent).join("/"));
 
 /* ---------- status rendering ---------- */
+fire({ type: "cooldown-wait", state: "searching", running: true, candidateCount: 100,
+  eligibleCount: 3, cooldownCount: 3, nextRoomRetryAt: Date.now() + 10000, pollIntervalMs: 500 });
+check("search status distinguishes matched rooms from cooling rooms",
+  document.getElementById("searchSummary").textContent.includes("匹配 3") &&
+  document.getElementById("searchSummary").textContent.includes("冷却 3"));
+check("cooldown status explains that list refresh is still live",
+  document.getElementById("searchSummary").textContent.includes("500ms") &&
+  document.getElementById("searchSummary").textContent.includes("复查"));
+fire({ type: "sweep-exhausted", state: "searching", count: 0, retryInMs: 15000 });
+check("a sweep count describes attempts, not available rooms",
+  log.children[0].querySelector(".chips")?.textContent.includes("尝试 0 次") &&
+  log.children[0].querySelector(".chips")?.textContent.includes("失败候选"));
+fire({ type: "stopped", state: "idle", running: false });
+check("search summary hides after stopping", document.getElementById("searchSummaryRow").hidden === true);
+document.getElementById("clearLog").onclick();
 fire({ type: "client-status", connected: false, message: "未检测到已登录的 League Client", checkedAt: Date.now() });
 check("the connection pill goes red when the client is missing", document.getElementById("client").dataset.state === "off");
 fire({ type: "client-status", connected: true, source: "lockfile", port: 7252, checkedAt: Date.now() });

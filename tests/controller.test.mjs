@@ -140,7 +140,8 @@ const joinsAfterLeave = state.joins.p1;
 await sleep(300);
 check("the dead room is not re-joined while the snapshot lags", state.joins.p1 === joinsAfterLeave, `joins ${joinsAfterLeave} -> ${state.joins.p1}`);
 
-state.rows = [row("p1", 3)];
+// The spent invite budget only becomes useful again when joining could reach floor five.
+state.rows = [row("p1", 4)];
 await sleep(200);
 check("a room that filled up is retried", state.joins.p1 === joinsAfterLeave + 1 && controller.state === "joined", `joins=${state.joins.p1} state=${controller.state}`);
 

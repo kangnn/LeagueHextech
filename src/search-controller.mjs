@@ -141,6 +141,8 @@ export class SearchController {
   #nextSearchAt = 0;
   #retryAt = 0;
   #attemptedSnapshots = new Map();
+  #cooldownCount = 0;
+  #nextRoomRetryAt;
   #watchTask;
   #pendingWatch;
   // A joined room is watched until it fills, spends its invitation budget, or stops growing below the
@@ -183,6 +185,9 @@ export class SearchController {
     // How long a room abandoned for a spent invitation budget stays out of the running when the
     // browser still reports it as unchanged.
     exhaustedCooldownMs = 120_000,
+    // Population is transient, and the browser may never update its stale slot count.
+    // Recheck a small room soon without repeatedly joining it at the list poll cadence.
+    populationCooldownMs = 10_000,
     // How long a watched room may sit below the player floor without gaining a single player before
     // it is abandoned. A room that keeps filling never reaches this, because progress resets it.
     // 0 makes the floor a hard gate: such a room is left on the very first check.
@@ -210,6 +215,7 @@ export class SearchController {
     this.maxSweepIntervalMs = Math.max(maxSweepIntervalMs, sweepIntervalMs);
     this.refreshThrottleMs = refreshThrottleMs;
     this.exhaustedCooldownMs = exhaustedCooldownMs;
+    this.populationCooldownMs = populationCooldownMs;
     this.stallTimeoutMs = stallTimeoutMs;
     this.inviteLimitCooldownMs = inviteLimitCooldownMs;
     this.watchIntervalFloorMs = watchIntervalFloorMs;
@@ -233,6 +239,8 @@ export class SearchController {
       lastRefreshAt: this.#lastRefreshAt,
       candidateCount: this.#candidateCount,
       eligibleCount: this.#eligibleCount,
+      cooldownCount: this.#cooldownCount,
+      nextRoomRetryAt: this.#nextRoomRetryAt,
       sweepCount: this.#sweepCount,
       sweepIntervalMs: this.sweepIntervalMs,
       selectedSummary: summarizeLobby(this.#selected),
@@ -342,6 +350,8 @@ export class SearchController {
     this.#nextSearchAt = 0;
     this.#retryAt = 0;
     this.#attemptedSnapshots.clear();
+    this.#cooldownCount = 0;
+    this.#nextRoomRetryAt = undefined;
     this.#pendingWatch = undefined;
     this.#watchJoined = false;
     this.#watchingSummary = undefined;
@@ -556,7 +566,7 @@ export class SearchController {
   async #runCycle(signal, snapshot, fromPush) {
     if (this.#stale(signal)) return;
     try {
-      this.#transition(STATES.searching);
+      this.#state = STATES.searching;
       // Ask the client to re-scan its browser, but do not wait for it: the refresh POST can take
       // seconds (5s was observed on a busy client), and serialising it in front of every list fetch
       // slowed the whole search loop by exactly that much every cycle. The rescan lands in time for
@@ -593,9 +603,22 @@ export class SearchController {
       // Only a new or changed eligible candidate may bypass the retry delay. Churn in
       // unrelated rows must not turn an unchanged busy room into two join requests per second.
       const unparked = ranked.filter(({ lobby }) => !this.#isExhaustedRoom(lobby));
+      this.#cooldownCount = ranked.length - unparked.length;
+      this.#nextRoomRetryAt = this.#cooldownCount ? Math.min(...ranked
+        .filter(({ lobby }) => this.#isExhaustedRoom(lobby))
+        .map(({ lobby }) => this.#exhaustedRooms.get(String(lobby.id)).expiresAt)) : undefined;
+      if (ranked.length > 0 && unparked.length === 0) {
+        // No join was attempted. Do not invent another failed sweep or extend retryAt.
+        // The per-room records already provide pacing; new rooms still bypass them.
+        this.#rejectedThisSweep.clear();
+        this.#selected = undefined;
+        this.#emit({ type: "cooldown-wait", message: "匹配房间均在冷却；持续刷新列表，新房间立即尝试" });
+        return this.#schedule(signal, Math.min(this.intervalMs, this.#nextRoomRetryAt - this.clock()));
+      }
       const available = backingOff ? unparked.filter(({ lobby }) =>
         this.#attemptedSnapshots.get(String(lobby.id)) !== listSignature([lobby])) : unparked;
       if (backingOff && available.length === 0) {
+        this.#emit({ type: "searching", message: "持续刷新列表，失败候选按退避重试" });
         return this.#schedule(signal, Math.min(this.intervalMs, this.#retryAt - this.clock()));
       }
       if (ranked.length === 0) {
@@ -610,7 +633,7 @@ export class SearchController {
       if (retryable.length === 0) {
         // Nothing left to attempt: every room was rejected, or the rest are known-dead rooms.
         // Either way the next sweep starts over from a freshly fetched list.
-        return this.#exhaustSweep(signal, { attempted: ranked.length });
+        return this.#exhaustSweep(signal, { attempted: 0 });
       }
 
       // With more candidates than the per-sweep budget, rotate the start so the tail is not starved.
@@ -654,7 +677,8 @@ export class SearchController {
             // explanation and the parking decision for each code the log has seen so far.
             const code = rejectionCode(error);
             const rule = SKIP_RULES[code];
-            if (rule?.park === "long") this.#rememberExhausted(candidate.lobby, this.inviteLimitCooldownMs);
+            if (rule?.park === "long") this.#rememberExhausted(candidate.lobby, this.inviteLimitCooldownMs,
+              code === "PARTY_INVITE_LIMIT" ? "invite-limit" : undefined);
             else if (rule?.park === "short") this.#rememberExhausted(candidate.lobby);
             if (code === "INVALID_GAME_VERSION") this.#noteVersionMismatch(candidate.lobby);
             this.#emit({
@@ -715,7 +739,9 @@ export class SearchController {
           // refuses outright with PARTY_INVITE_LIMIT. Remembering it only for the current sweep was not
           // enough: the next sweep forgot it and joined the same hopeless room again, burning a join
           // attempt, a leave, and an extra LCU round trip every minute.
-          this.#rememberExhausted(current ?? candidate.lobby, this.inviteLimitCooldownMs);
+          this.#rememberExhausted(current ?? candidate.lobby, this.inviteLimitCooldownMs, "invites-exhausted");
+        } else if (verification.reason === "too-few-players") {
+          this.#rememberExhausted(current ?? candidate.lobby, this.populationCooldownMs, "too-few-players");
         } else {
           this.#rememberExhausted(candidate.lobby);
         }
@@ -886,7 +912,9 @@ export class SearchController {
     await this.provider.leaveLobby({ signal });
     if (this.#stale(signal)) return;
     this.#rejectedThisSweep.add(String(current.id));
-    this.#rememberExhausted(current);
+    this.#rememberExhausted(current, type === "left-stalled-room"
+      ? this.populationCooldownMs : this.inviteLimitCooldownMs,
+    type === "left-stalled-room" ? "too-few-players" : "invites-exhausted");
     this.#watchJoined = false;
     this.#watchingSummary = undefined;
     this.#belowFloor = false;
@@ -946,14 +974,15 @@ export class SearchController {
   }
 
   /**
-   * Remembers a room that has no way of filling: its invitation budget is spent, or the party
-   * refuses new invitations altogether. The browser snapshot is the recovery signal, but it lags the
-   * room, so a room only counts as recovered once it reports more players than either source saw.
+   * Remember why a room was parked. Joined counts include us; browser counts do not.
+   * Keep the high-water mark in browser units so a near-full room can recover one player earlier.
    */
-  #rememberExhausted(lobby, cooldownMs = this.exhaustedCooldownMs) {
+  #rememberExhausted(lobby, cooldownMs = this.exhaustedCooldownMs, reason) {
     const id = String(lobby.id);
     this.#exhaustedRooms.set(id, {
-      playerCount: Math.max(Number(lobby.playerCount) || 0, this.#snapshotCounts.get(id) ?? 0),
+      playerCount: Math.max((Number(lobby.playerCount) || 0) - (lobby.joined ? 1 : 0), this.#snapshotCounts.get(id) ?? 0),
+      reason,
+      minPlayers: Number(this.policy.minPlayers) || 0,
       expiresAt: this.clock() + cooldownMs
     });
   }
@@ -1017,18 +1046,27 @@ export class SearchController {
   }
 
   /**
-   * True while a room abandoned for a spent invitation budget still looks no better than it did
-   * when it was left. A room that has genuinely recovered reports more players, so it is retried.
+   * Population growth only helps when it can close the actual gap. A known explicit
+   * PARTY_INVITE_LIMIT refusal is different: more players do not reopen invitation capacity.
+   * All records expire, because even an unchanged browser snapshot can be stale.
    */
   #isExhaustedRoom(lobby) {
     const id = String(lobby.id);
     const record = this.#exhaustedRooms.get(id);
     if (!record) return false;
-    if (this.clock() >= record.expiresAt) {
+    const players = Number(lobby.playerCount) || 0;
+    const floor = Number(this.policy.minPlayers) || 0;
+    const gapRequired = record.reason === "invites-exhausted" ||
+      (record.reason === "too-few-players" && this.stallTimeoutMs === 0);
+    const grown = players > record.playerCount || (gapRequired && floor < record.minPlayers);
+    const recovered = record.reason !== "invite-limit" && grown && (!gapRequired || players + 1 >= floor);
+    if (this.clock() >= record.expiresAt || recovered) {
       this.#exhaustedRooms.delete(id);
+      // A recovered per-room cooldown must not fall back into the unrelated sweep backoff.
+      this.#attemptedSnapshots.delete(id);
       return false;
     }
-    return Number(lobby.playerCount) <= record.playerCount;
+    return true;
   }
 
   #schedule(signal, delay = this.#delayMs) {

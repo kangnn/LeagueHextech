@@ -458,6 +458,143 @@ test("raw LCU events and provider requests join by party id and verify real memb
   ]);
 });
 
+test("a below-floor room is rechecked after 10 seconds even when browser counts stay stale", async (clock) => {
+  let inside;
+  const attempts = [];
+  const controller = clock.controller({
+    currentLobby: async () => inside,
+    listLobbies: async () => [row("small", 1)],
+    joinLobby: async () => { attempts.push(clock.now()); inside = room("small", clock.now() >= 5000 ? 8 : 2); },
+    leaveLobby: async () => { inside = undefined; }
+  }, { stallTimeoutMs: 0 });
+  await controller.start();
+  await clock.advance(9500);
+  assert.deepEqual(attempts, [0], "do not hammer the same small room every poll");
+  await clock.advance(1000);
+  assert.equal(controller.state, "joined", "stale public count must not hide a recovered room for 2 minutes");
+  assert.deepEqual(attempts, [0, 10000]);
+});
+
+test("all-cooled rooms report cooling instead of fabricated retry sweeps, while the list stays live", async (clock) => {
+  let rows = [row("full-invites", 1)];
+  let reads = 0;
+  let inside;
+  const events = [];
+  const attempts = [];
+  const controller = clock.controller({
+    currentLobby: async () => inside,
+    listLobbies: async () => { reads++; return rows; },
+    joinLobby: async id => {
+      attempts.push([id, clock.now()]);
+      if (id === "full-invites") throw Object.assign(new Error("PARTY_INVITE_LIMIT"), { skip: true });
+      inside = room(id, 8);
+    }
+  }, { emit: event => events.push(event) });
+  await controller.start();
+  await clock.advance(60000);
+  assert.equal(reads, 121);
+  assert.equal(attempts.length, 1);
+  assert.equal(controller.status().sweepCount, 1, "polling cooled rooms is not another attempted sweep");
+  assert.equal(controller.status().cooldownCount, 1);
+  assert.equal(controller.status().nextRoomRetryAt, 600000);
+  assert.ok(events.some(event => event.type === "cooldown-wait" && event.cooldownCount === 1));
+  rows = [row("new", 8), ...rows];
+  await clock.advance(500);
+  assert.deepEqual(attempts.at(-1), ["new", 60500]);
+});
+
+test("a watched stalled room uses the same short population cooldown", async (clock) => {
+  let inside;
+  const attempts = [];
+  const controller = clock.controller({
+    currentLobby: async () => inside,
+    listLobbies: async () => [row("room", 1)],
+    joinLobby: async () => { attempts.push(clock.now()); inside = room("room", 2); },
+    leaveLobby: async () => { inside = undefined; }
+  }, { stallTimeoutMs: 1000 });
+  await controller.start();
+  await clock.advance(11500);
+  assert.deepEqual(attempts, [0, 11000], "watch abandonment must not keep a 2 minute floor cooldown");
+});
+
+test("zero-wait scouting waits for the whole missing-player gap, not each one-player growth", async (clock) => {
+  let players = 1;
+  let inside;
+  const joins = [];
+  const controller = clock.controller({
+    currentLobby: async () => inside,
+    listLobbies: async () => [row("growing", players)],
+    joinLobby: async () => { joins.push(players); inside = room("growing", players + 1); },
+    leaveLobby: async () => { inside = undefined; }
+  }, { policy: { ...policy, minPlayers: 9 }, stallTimeoutMs: 0, populationCooldownMs: 60000 });
+  await controller.start();
+  for (const count of [2, 3, 4, 7]) { players = count; await clock.advance(4000); }
+  assert.deepEqual(joins, [1], "a known small room must not be joined and left on every small increase");
+  players = 8;
+  await clock.advance(500);
+  assert.deepEqual(joins, [1, 8], "eight browser members plus ourselves can satisfy floor nine");
+  assert.equal(controller.state, "joined");
+});
+
+test("a previously verified eight-player room is retried at browser eight for floor nine", async (clock) => {
+  let players = 7;
+  let inside;
+  let joins = 0;
+  const controller = clock.controller({
+    currentLobby: async () => inside,
+    listLobbies: async () => [row("near-floor", players)],
+    joinLobby: async () => { joins++; inside = room("near-floor", players + 1); },
+    leaveLobby: async () => { inside = undefined; }
+  }, { policy: { ...policy, minPlayers: 9 }, stallTimeoutMs: 0 });
+  await controller.start();
+  players = 8;
+  await clock.advance(500);
+  assert.equal(joins, 2, "post-join eight included us; do not require browser nine, which would fill on join");
+  assert.equal(controller.state, "joined");
+});
+
+test("an explicit invite-limit rejection stays parked through player growth, but expires", async (clock) => {
+  let players = 1;
+  const attempts = [];
+  const controller = clock.controller({
+    currentLobby: async () => undefined,
+    listLobbies: async () => [row("invite-full", players)],
+    joinLobby: async () => { attempts.push(clock.now()); throw Object.assign(new Error("PARTY_INVITE_LIMIT"), { skip: true }); }
+  }, { inviteLimitCooldownMs: 20000 });
+  await controller.start();
+  for (const count of [2, 3, 7, 8]) { players = count; await clock.advance(4000); }
+  assert.equal(attempts.length, 1, "a player increase does not prove invitation capacity reopened");
+  await clock.advance(4000);
+  assert.equal(attempts.length, 2, "cooldown expiration still permits a fresh probe");
+});
+
+test("invites exhausted after joining require a viable population, not one extra member", async (clock) => {
+  let players = 1;
+  let inside;
+  const attempts = [];
+  const controller = clock.controller({
+    currentLobby: async () => inside,
+    listLobbies: async () => [row("spent", players)],
+    joinLobby: async () => { attempts.push(players); inside = room("spent", players + 1, { inviteCount: 50 }); },
+    leaveLobby: async () => { inside = undefined; }
+  }, { policy: { ...policy, minPlayers: 9 }, stallTimeoutMs: 0 });
+  await controller.start();
+  for (const count of [3, 4, 7]) { players = count; await clock.advance(4000); }
+  assert.deepEqual(attempts, [1], "a room still well below the floor remains unproductive even if growing");
+});
+
+test("an unseen low browser snapshot is still probed once because the list can lag", async (clock) => {
+  let inside;
+  let joins = 0;
+  const controller = clock.controller({
+    currentLobby: async () => inside, listLobbies: async () => [row("stale-list", 1)],
+    joinLobby: async () => { joins++; inside = room("stale-list", 9); }
+  }, { policy: { ...policy, minPlayers: 9 }, stallTimeoutMs: 0 });
+  await controller.start();
+  assert.equal(joins, 1);
+  assert.equal(controller.state, "joined", "do not replace real membership verification with a hard browser gate");
+});
+
 let failures = 0;
 for (const { name, run } of tests) {
   try { await withClock(run); console.log("PASS", name); }

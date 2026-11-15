@@ -318,6 +318,7 @@
   <div class="stat"><span class="k">已完成轮次</span><span class="v" id="sweeps">0</span></div>
 </div>
 
+<div class="row" id="searchSummaryRow" hidden><span class="k">搜索进度</span><span class="v" id="searchSummary"></span></div>
 <div class="row" id="selectionRow" hidden><span class="k">当前房间</span><span class="chips" id="selection"></span></div>
 <div class="row error-row" id="errorRow" hidden><span class="k">最近错误</span><span class="v" id="error"></span></div>
 <div class="row" id="updateRow" hidden><span class="k">更新</span><span class="v" id="updateText"></span><button id="installUpdate" class="secondary" hidden>重启并更新</button></div>
@@ -366,7 +367,7 @@ const LABELS = {
   verifying: "核对房间", joined: "守候房间中", stopped: "已停止", left: "已离开房间", leaving: "离开房间中",
   watching: "人数变化", "no-match": "无可用房间", skipped: "跳过房间",
   "rejected-after-join": "验证失败退出", error: "请求失败", warning: "提示", configured: "设置已保存",
-  "sweep-exhausted": "本轮结束", "room-gone": "房间已消失",
+  "sweep-exhausted": "本轮结束", "cooldown-wait": "持续刷新列表", "room-gone": "房间已消失",
   "left-stale-room": "邀请额度用尽退出", "left-stalled-room": "人数不达标退出",
   "diagnostics-ok": "连接正常", "client-status": "客户端状态", update: "更新"
 };
@@ -379,7 +380,7 @@ const TONES = {
   "left-stalled-room": "warn", "room-gone": "warn", warning: "warn",
   error: "bad", leaving: "accent",
   idle: "muted", stopped: "muted", left: "muted", configured: "muted",
-  "no-match": "muted", "sweep-exhausted": "muted", "client-status": "muted"
+  "no-match": "muted", "sweep-exhausted": "muted", "cooldown-wait": "muted", "client-status": "muted"
 };
 const SOURCES = {
   "client-log": "客户端日志", lockfile: "lockfile", "process-command-line": "进程命令行"
@@ -584,8 +585,8 @@ function chipsFor(event) {
   if (lobby?.spectatorsAllowed === true) {
     chips.push(textChip(`观战 ${lobby.spectatorCount ?? 0}/${lobby.maxSpectators ?? "?"}`, "spectate"));
   }
-  if (event.count !== undefined && !lobby) chips.push(textChip(`${event.count} 个房间`, "count"));
-  if (event.retryInMs) chips.push(textChip(`${Math.round(event.retryInMs / 1000)}s 后重试`));
+  if (event.count !== undefined && !lobby) chips.push(textChip(event.type === "sweep-exhausted" ? `尝试 ${event.count} 次` : `${event.count} 个房间`, "count"));
+  if (event.retryInMs) chips.push(textChip(`${Math.round(event.retryInMs / 1000)}s 后重试${event.type === "sweep-exhausted" ? "失败候选；列表持续刷新" : ""}`));
   // How long the client took over an operation it answered anyway - a leave that takes ten seconds is
   // the client's doing, and showing the number is what stops it looking like the tool hanging.
   if (event.elapsedMs) chips.push(textChip(`耗时 ${(event.elapsedMs / 1000).toFixed(1)}s`));
@@ -711,6 +712,11 @@ function render(status) {
 
   $("refreshed").textContent = time(status.lastRefreshAt);
   $("sweeps").textContent = String(status.sweepCount ?? 0);
+  $("searchSummaryRow").hidden = !status.running || status.state !== "searching";
+  if (status.running && status.state === "searching") {
+    const retry = status.nextRoomRetryAt ? `；冷却房间最早 ${time(status.nextRoomRetryAt)} 复查` : "";
+    $("searchSummary").textContent = `匹配 ${status.eligibleCount ?? 0} · 冷却 ${status.cooldownCount ?? 0}；列表每 ${status.pollIntervalMs ?? 2000}ms 刷新${retry}`;
+  }
 
   const errorRow = $("errorRow");
   errorRow.hidden = !status.lastError;
